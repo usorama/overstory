@@ -60,7 +60,7 @@ export interface AgentDefinition {
 
 // === Agent Session ===
 
-export type AgentState = "booting" | "working" | "stalled" | "zombie";
+export type AgentState = "booting" | "working" | "completed" | "stalled" | "zombie";
 
 export interface AgentSession {
 	id: string; // Unique session ID

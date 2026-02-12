@@ -11,6 +11,7 @@ import { updateIdentity } from "../agents/identity.ts";
 import { loadConfig } from "../config.ts";
 import { ValidationError } from "../errors.ts";
 import { createLogger } from "../logging/logger.ts";
+import { createMetricsStore } from "../metrics/store.ts";
 import type { AgentSession } from "../types.ts";
 
 /**
@@ -76,10 +77,37 @@ async function updateLastActivity(projectRoot: string, agentName: string): Promi
 }
 
 /**
- * Look up an agent's session to get its beadId.
+ * Transition agent state to 'completed' in sessions.json.
+ * Called when session-end event fires.
+ * Non-fatal: silently ignores errors to avoid breaking hook execution.
+ */
+async function transitionToCompleted(projectRoot: string, agentName: string): Promise<void> {
+	const sessionsPath = join(projectRoot, ".overstory", "sessions.json");
+	const file = Bun.file(sessionsPath);
+	if (!(await file.exists())) return;
+
+	try {
+		const text = await file.text();
+		const sessions = JSON.parse(text) as AgentSession[];
+		const session = sessions.find((s) => s.agentName === agentName);
+		if (session) {
+			session.state = "completed";
+			session.lastActivity = new Date().toISOString();
+			await Bun.write(sessionsPath, `${JSON.stringify(sessions, null, "\t")}\n`);
+		}
+	} catch {
+		// Non-fatal: don't break logging if session update fails
+	}
+}
+
+/**
+ * Look up an agent's session record.
  * Returns null if not found.
  */
-async function getAgentBeadId(projectRoot: string, agentName: string): Promise<string | null> {
+async function getAgentSession(
+	projectRoot: string,
+	agentName: string,
+): Promise<AgentSession | null> {
 	const sessionsPath = join(projectRoot, ".overstory", "sessions.json");
 	const file = Bun.file(sessionsPath);
 	if (!(await file.exists())) return null;
@@ -87,8 +115,7 @@ async function getAgentBeadId(projectRoot: string, agentName: string): Promise<s
 	try {
 		const text = await file.text();
 		const sessions = JSON.parse(text) as AgentSession[];
-		const session = sessions.find((s) => s.agentName === agentName);
-		return session?.beadId ?? null;
+		return sessions.find((s) => s.agentName === agentName) ?? null;
 	} catch {
 		return null;
 	}
@@ -160,10 +187,15 @@ export async function logCommand(args: string[]): Promise<void> {
 			break;
 		case "session-end":
 			logger.info("session.end", { agentName });
-			// Update agent identity with completed session
+			// Transition agent state to completed
+			await transitionToCompleted(config.project.root, agentName);
+			// Look up agent session for identity update and metrics recording
 			{
+				const agentSession = await getAgentSession(config.project.root, agentName);
+				const beadId = agentSession?.beadId ?? null;
+
+				// Update agent identity with completed session
 				const identityBaseDir = join(config.project.root, ".overstory", "agents");
-				const beadId = await getAgentBeadId(config.project.root, agentName);
 				try {
 					await updateIdentity(identityBaseDir, agentName, {
 						sessionsCompleted: 1,
@@ -171,6 +203,30 @@ export async function logCommand(args: string[]): Promise<void> {
 					});
 				} catch {
 					// Non-fatal: identity may not exist for this agent
+				}
+
+				// Record session metrics
+				if (agentSession) {
+					try {
+						const metricsDbPath = join(config.project.root, ".overstory", "metrics.db");
+						const metricsStore = createMetricsStore(metricsDbPath);
+						const now = new Date().toISOString();
+						const durationMs = new Date(now).getTime() - new Date(agentSession.startedAt).getTime();
+						metricsStore.recordSession({
+							agentName,
+							beadId: agentSession.beadId,
+							capability: agentSession.capability,
+							startedAt: agentSession.startedAt,
+							completedAt: now,
+							durationMs,
+							exitCode: null,
+							mergeResult: null,
+							parentAgent: agentSession.parentAgent,
+						});
+						metricsStore.close();
+					} catch {
+						// Non-fatal: metrics recording should not break session-end handling
+					}
 				}
 			}
 			// Clear the current session marker

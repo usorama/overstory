@@ -43,12 +43,20 @@ function formatMessage(msg: MailMessage): string {
 }
 
 /**
+ * Open a mail store connected to the project's mail.db.
+ * Resolves the path relative to cwd/.overstory/mail.db.
+ */
+function openStore(cwd: string) {
+	const dbPath = join(cwd, ".overstory", "mail.db");
+	return createMailStore(dbPath);
+}
+
+/**
  * Open a mail client connected to the project's mail.db.
  * Resolves the path relative to cwd/.overstory/mail.db.
  */
 function openClient(cwd: string) {
-	const dbPath = join(cwd, ".overstory", "mail.db");
-	const store = createMailStore(dbPath);
+	const store = openStore(cwd);
 	const client = createMailClient(store);
 	return client;
 }
@@ -215,10 +223,50 @@ function handleReply(args: string[], cwd: string): void {
 	}
 }
 
+/** overstory mail purge */
+function handlePurge(args: string[], cwd: string): void {
+	const all = hasFlag(args, "--all");
+	const daysStr = getFlag(args, "--days");
+	const agent = getFlag(args, "--agent");
+	const json = hasFlag(args, "--json");
+
+	if (!all && daysStr === undefined && agent === undefined) {
+		throw new ValidationError(
+			"mail purge requires at least one filter: --all, --days <n>, or --agent <name>",
+			{ field: "purge" },
+		);
+	}
+
+	let olderThanMs: number | undefined;
+	if (daysStr !== undefined) {
+		const days = Number.parseInt(daysStr, 10);
+		if (Number.isNaN(days) || days <= 0) {
+			throw new ValidationError("--days must be a positive integer", {
+				field: "days",
+				value: daysStr,
+			});
+		}
+		olderThanMs = days * 24 * 60 * 60 * 1000;
+	}
+
+	const store = openStore(cwd);
+	try {
+		const purged = store.purge({ all, olderThanMs, agent });
+
+		if (json) {
+			process.stdout.write(`${JSON.stringify({ purged })}\n`);
+		} else {
+			process.stdout.write(`Purged ${purged} message${purged === 1 ? "" : "s"}.\n`);
+		}
+	} finally {
+		store.close();
+	}
+}
+
 /**
  * Entry point for `overstory mail <subcommand> [args...]`.
  *
- * Subcommands: send, check, list, read, reply.
+ * Subcommands: send, check, list, read, reply, purge.
  */
 const MAIL_HELP = `overstory mail — Agent messaging system
 
@@ -239,6 +287,9 @@ Subcommands:
   reply    Reply to a message
              <message-id> --body <text> [--from <name>]
              [--agent <name> (alias for --from)] [--json]
+  purge    Delete old messages
+             --all | --days <n> | --agent <name>
+             [--json]
 
 Options:
   --help, -h   Show this help`;
@@ -269,9 +320,12 @@ export async function mailCommand(args: string[]): Promise<void> {
 		case "reply":
 			handleReply(subArgs, cwd);
 			break;
+		case "purge":
+			handlePurge(subArgs, cwd);
+			break;
 		default:
 			throw new MailError(
-				`Unknown mail subcommand: ${subcommand ?? "(none)"}. Use: send, check, list, read, reply`,
+				`Unknown mail subcommand: ${subcommand ?? "(none)"}. Use: send, check, list, read, reply, purge`,
 			);
 	}
 }

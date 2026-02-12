@@ -159,8 +159,34 @@ async function tryAutoResolve(
 }
 
 /**
+ * Check if text looks like conversational prose rather than code.
+ * Returns true if the output is likely prose from the LLM rather than resolved code.
+ */
+export function looksLikeProse(text: string): boolean {
+	const trimmed = text.trim();
+	if (trimmed.length === 0) return true;
+
+	// Common conversational opening patterns from LLMs
+	const prosePatterns = [
+		/^(I |I'[a-z]+ |Here |Here's |The |This |Let me |Sure|Unfortunately|Apologies|Sorry)/i,
+		/^(To resolve|Looking at|Based on|After reviewing|The conflict)/i,
+		/^```/m, // Markdown fencing — the model wrapped the code
+		/I need permission/i,
+		/I cannot/i,
+		/I don't have/i,
+	];
+
+	for (const pattern of prosePatterns) {
+		if (pattern.test(trimmed)) return true;
+	}
+
+	return false;
+}
+
+/**
  * Tier 3: AI-assisted conflict resolution using Claude.
  * Spawns `claude --print` for each conflicted file with the conflict content.
+ * Validates that output looks like code, not conversational prose.
  */
 async function tryAiResolve(
 	conflictFiles: string[],
@@ -174,9 +200,10 @@ async function tryAiResolve(
 		try {
 			const content = await readFile(filePath);
 			const prompt = [
-				"Resolve this git merge conflict. Return ONLY the resolved file content",
-				"with no explanation, no markdown fencing, and no conflict markers.",
-				"Choose the best combination of both sides:\n\n",
+				"You are a merge conflict resolver. Output ONLY the resolved file content.",
+				"Rules: NO explanation, NO markdown fencing, NO conversation, NO preamble.",
+				"Output the raw file content as it should appear on disk.",
+				"Choose the best combination of both sides of this conflict:\n\n",
 				content,
 			].join(" ");
 
@@ -193,6 +220,12 @@ async function tryAiResolve(
 			]);
 
 			if (exitCode !== 0 || resolved.trim() === "") {
+				remainingConflicts.push(file);
+				continue;
+			}
+
+			// Validate output is code, not prose — fall back to next tier if not
+			if (looksLikeProse(resolved)) {
 				remainingConflicts.push(file);
 				continue;
 			}
@@ -247,8 +280,10 @@ async function tryReimagine(
 			}
 
 			const prompt = [
+				"You are a merge conflict resolver. Output ONLY the final file content.",
+				"Rules: NO explanation, NO markdown fencing, NO conversation, NO preamble.",
+				"Output the raw file content as it should appear on disk.",
 				"Reimplement the changes from the branch version onto the canonical version.",
-				"Return ONLY the final file content with no explanation and no markdown fencing.",
 				`\n\n=== CANONICAL VERSION (${canonicalBranch}) ===\n`,
 				canonicalContent,
 				`\n\n=== BRANCH VERSION (${entry.branchName}) ===\n`,
@@ -268,6 +303,11 @@ async function tryReimagine(
 			]);
 
 			if (exitCode !== 0 || reimagined.trim() === "") {
+				return { success: false };
+			}
+
+			// Validate output is code, not prose
+			if (looksLikeProse(reimagined)) {
 				return { success: false };
 			}
 
@@ -308,15 +348,25 @@ export function createMergeResolver(options: {
 			canonicalBranch: string,
 			repoRoot: string,
 		): Promise<MergeResult> {
-			// Ensure we're on the canonical branch before merging
-			const { exitCode: checkoutCode, stderr: checkoutErr } = await runGit(repoRoot, [
-				"checkout",
-				canonicalBranch,
+			// Check current branch — skip checkout if already on canonical.
+			// Avoids "already checked out" error when worktrees exist.
+			const { stdout: currentRef, exitCode: refCode } = await runGit(repoRoot, [
+				"symbolic-ref",
+				"--short",
+				"HEAD",
 			]);
-			if (checkoutCode !== 0) {
-				throw new MergeError(`Failed to checkout ${canonicalBranch}: ${checkoutErr.trim()}`, {
-					branchName: canonicalBranch,
-				});
+			const needsCheckout = refCode !== 0 || currentRef.trim() !== canonicalBranch;
+
+			if (needsCheckout) {
+				const { exitCode: checkoutCode, stderr: checkoutErr } = await runGit(repoRoot, [
+					"checkout",
+					canonicalBranch,
+				]);
+				if (checkoutCode !== 0) {
+					throw new MergeError(`Failed to checkout ${canonicalBranch}: ${checkoutErr.trim()}`, {
+						branchName: canonicalBranch,
+					});
+				}
 			}
 
 			let lastTier: ResolutionTier = "clean-merge";

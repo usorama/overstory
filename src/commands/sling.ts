@@ -14,7 +14,7 @@
  */
 
 import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { deployHooks } from "../agents/hooks-deployer.ts";
 import { createIdentity, loadIdentity } from "../agents/identity.ts";
 import { createManifestLoader } from "../agents/manifest.ts";
@@ -152,9 +152,12 @@ export async function slingCommand(args: string[]): Promise<void> {
 		});
 	}
 
-	// Validate that spec file exists if provided
+	// Validate that spec file exists if provided, and resolve to absolute path
+	// so agents in worktrees can access it (worktrees don't have .overstory/)
+	let absoluteSpecPath: string | null = null;
 	if (specPath !== null) {
-		const specFile = Bun.file(specPath);
+		absoluteSpecPath = resolve(specPath);
+		const specFile = Bun.file(absoluteSpecPath);
 		const specExists = await specFile.exists();
 		if (!specExists) {
 			throw new ValidationError(`Spec file not found: ${specPath}`, {
@@ -176,9 +179,11 @@ export async function slingCommand(args: string[]): Promise<void> {
 	const config = await loadConfig(cwd);
 
 	// 2. Validate depth limit
-	if (depth >= config.agents.maxDepth) {
+	// Hierarchy: orchestrator(0) -> lead(1) -> specialist(2)
+	// With maxDepth=2, depth=2 is the deepest allowed leaf, so reject only depth > maxDepth
+	if (depth > config.agents.maxDepth) {
 		throw new AgentError(
-			`Depth limit exceeded: depth ${depth} >= maxDepth ${config.agents.maxDepth}`,
+			`Depth limit exceeded: depth ${depth} > maxDepth ${config.agents.maxDepth}`,
 			{ agentName: name },
 		);
 	}
@@ -202,7 +207,7 @@ export async function slingCommand(args: string[]): Promise<void> {
 	const sessionsPath = join(config.project.root, ".overstory", "sessions.json");
 	const sessions = await loadSessions(sessionsPath);
 
-	const activeSessions = sessions.filter((s) => s.state !== "zombie");
+	const activeSessions = sessions.filter((s) => s.state !== "zombie" && s.state !== "completed");
 	if (activeSessions.length >= config.agents.maxConcurrent) {
 		throw new AgentError(
 			`Max concurrent agent limit reached: ${activeSessions.length}/${config.agents.maxConcurrent} active agents`,
@@ -210,7 +215,9 @@ export async function slingCommand(args: string[]): Promise<void> {
 		);
 	}
 
-	const existing = sessions.find((s) => s.agentName === name && s.state !== "zombie");
+	const existing = sessions.find(
+		(s) => s.agentName === name && s.state !== "zombie" && s.state !== "completed",
+	);
 	if (existing) {
 		throw new AgentError(`Agent name "${name}" is already in use (state: ${existing.state})`, {
 			agentName: name,
@@ -261,7 +268,7 @@ export async function slingCommand(args: string[]): Promise<void> {
 	const overlayConfig: OverlayConfig = {
 		agentName: name,
 		beadId: taskId,
-		specPath,
+		specPath: absoluteSpecPath,
 		branchName,
 		fileScope,
 		mulchDomains: config.mulch.enabled ? config.mulch.domains : [],

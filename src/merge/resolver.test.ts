@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { MergeError } from "../errors.ts";
 import { cleanupTempDir, commitFile, createTempGitRepo, runGitInDir } from "../test-helpers.ts";
 import type { MergeEntry } from "../types.ts";
-import { createMergeResolver } from "./resolver.ts";
+import { createMergeResolver, looksLikeProse } from "./resolver.ts";
 
 /**
  * Helper to create a mock Bun.spawn return value for claude CLI mocking.
@@ -460,6 +460,143 @@ describe("createMergeResolver", () => {
 			expect(result.entry.branchName).toBe("overstory/my-agent/bead-xyz");
 			expect(result.entry.beadId).toBe("bead-xyz");
 			expect(result.entry.agentName).toBe("my-agent");
+		});
+	});
+
+	describe("checkout skip when already on canonical branch", () => {
+		test("succeeds when already on canonical branch (skips checkout)", async () => {
+			const repoDir = await createTempGitRepo();
+			try {
+				await setupCleanMerge(repoDir);
+
+				// Verify we're on main
+				const branch = await runGitInDir(repoDir, ["symbolic-ref", "--short", "HEAD"]);
+				expect(branch.trim()).toBe("main");
+
+				const entry = makeTestEntry({
+					branchName: "feature-branch",
+					filesModified: ["src/feature-file.ts"],
+				});
+
+				const resolver = createMergeResolver({
+					aiResolveEnabled: false,
+					reimagineEnabled: false,
+				});
+
+				const result = await resolver.resolve(entry, "main", repoDir);
+				expect(result.success).toBe(true);
+				expect(result.tier).toBe("clean-merge");
+			} finally {
+				await cleanupTempDir(repoDir);
+			}
+		});
+
+		test("checks out canonical when on a different branch", async () => {
+			const repoDir = await createTempGitRepo();
+			try {
+				await setupCleanMerge(repoDir);
+
+				// Switch to a different branch
+				await runGitInDir(repoDir, ["checkout", "-b", "some-other-branch"]);
+				const branch = await runGitInDir(repoDir, ["symbolic-ref", "--short", "HEAD"]);
+				expect(branch.trim()).toBe("some-other-branch");
+
+				const entry = makeTestEntry({
+					branchName: "feature-branch",
+					filesModified: ["src/feature-file.ts"],
+				});
+
+				const resolver = createMergeResolver({
+					aiResolveEnabled: false,
+					reimagineEnabled: false,
+				});
+
+				const result = await resolver.resolve(entry, "main", repoDir);
+				expect(result.success).toBe(true);
+				expect(result.tier).toBe("clean-merge");
+			} finally {
+				await cleanupTempDir(repoDir);
+			}
+		});
+	});
+
+	describe("looksLikeProse", () => {
+		test("detects conversational prose", () => {
+			expect(looksLikeProse("I need permission to edit the file")).toBe(true);
+			expect(looksLikeProse("Here's the resolved content:")).toBe(true);
+			expect(looksLikeProse("Here is the file")).toBe(true);
+			expect(looksLikeProse("The conflict can be resolved by")).toBe(true);
+			expect(looksLikeProse("Let me resolve this for you")).toBe(true);
+			expect(looksLikeProse("Sure, here's the resolved file")).toBe(true);
+			expect(looksLikeProse("I cannot access the file")).toBe(true);
+			expect(looksLikeProse("I don't have access")).toBe(true);
+			expect(looksLikeProse("To resolve this, we need to")).toBe(true);
+			expect(looksLikeProse("Looking at the conflict")).toBe(true);
+			expect(looksLikeProse("Based on both versions")).toBe(true);
+		});
+
+		test("detects markdown fencing", () => {
+			expect(looksLikeProse("```typescript\nconst x = 1;\n```")).toBe(true);
+			expect(looksLikeProse("```\nsome code\n```")).toBe(true);
+		});
+
+		test("detects empty output", () => {
+			expect(looksLikeProse("")).toBe(true);
+			expect(looksLikeProse("   ")).toBe(true);
+		});
+
+		test("accepts valid code", () => {
+			expect(looksLikeProse("const x = 1;")).toBe(false);
+			expect(looksLikeProse("import { foo } from 'bar';")).toBe(false);
+			expect(looksLikeProse("export function resolve() {}")).toBe(false);
+			expect(looksLikeProse("function hello() {\n  return 'world';\n}")).toBe(false);
+			expect(looksLikeProse("// comment\nconst a = 1;")).toBe(false);
+		});
+	});
+
+	describe("Tier 3: AI-resolve prose rejection", () => {
+		test("rejects prose output and falls through to failure", async () => {
+			const repoDir = await createTempGitRepo();
+			try {
+				await setupDeleteModifyConflict(repoDir);
+
+				const originalSpawn = Bun.spawn;
+				const selectiveMock = (...args: unknown[]): unknown => {
+					const cmd = args[0] as string[];
+					if (cmd?.[0] === "claude") {
+						// Return prose instead of code
+						return mockSpawnResult(
+							"I need permission to edit the file. Here's the resolved content:\n```\nresolved\n```",
+							"",
+							0,
+						);
+					}
+					return originalSpawn.apply(Bun, args as Parameters<typeof Bun.spawn>);
+				};
+
+				const spawnSpy = spyOn(Bun, "spawn").mockImplementation(selectiveMock as typeof Bun.spawn);
+
+				try {
+					const entry = makeTestEntry({
+						branchName: "feature-branch",
+						filesModified: ["src/test.ts"],
+					});
+
+					const resolver = createMergeResolver({
+						aiResolveEnabled: true,
+						reimagineEnabled: false,
+					});
+
+					const result = await resolver.resolve(entry, "main", repoDir);
+
+					// Should fail because prose was rejected
+					expect(result.success).toBe(false);
+				} finally {
+					spawnSpy.mockRestore();
+				}
+			} finally {
+				await cleanupTempDir(repoDir);
+			}
 		});
 	});
 });

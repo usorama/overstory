@@ -4,129 +4,54 @@
 		"scout": {
 			"file": "scout.md",
 			"model": "haiku",
-			"tools": [
-				"Read",
-				"Glob",
-				"Grep",
-				"Bash"
-			],
-			"capabilities": [
-				"explore",
-				"research"
-			],
+			"tools": ["Read", "Glob", "Grep", "Bash"],
+			"capabilities": ["explore", "research"],
 			"canSpawn": false,
-			"constraints": [
-				"read-only"
-			]
+			"constraints": ["read-only"]
 		},
 		"builder": {
 			"file": "builder.md",
 			"model": "sonnet",
-			"tools": [
-				"Read",
-				"Write",
-				"Edit",
-				"Glob",
-				"Grep",
-				"Bash"
-			],
-			"capabilities": [
-				"implement",
-				"refactor",
-				"fix"
-			],
+			"tools": ["Read", "Write", "Edit", "Glob", "Grep", "Bash"],
+			"capabilities": ["implement", "refactor", "fix"],
 			"canSpawn": false,
 			"constraints": []
 		},
 		"reviewer": {
 			"file": "reviewer.md",
 			"model": "sonnet",
-			"tools": [
-				"Read",
-				"Glob",
-				"Grep",
-				"Bash"
-			],
-			"capabilities": [
-				"review",
-				"validate"
-			],
+			"tools": ["Read", "Glob", "Grep", "Bash"],
+			"capabilities": ["review", "validate"],
 			"canSpawn": false,
-			"constraints": [
-				"read-only"
-			]
+			"constraints": ["read-only"]
 		},
 		"lead": {
 			"file": "lead.md",
 			"model": "opus",
-			"tools": [
-				"Read",
-				"Write",
-				"Edit",
-				"Glob",
-				"Grep",
-				"Bash",
-				"Task"
-			],
-			"capabilities": [
-				"coordinate",
-				"implement",
-				"review"
-			],
+			"tools": ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Task"],
+			"capabilities": ["coordinate", "implement", "review"],
 			"canSpawn": true,
 			"constraints": []
 		},
 		"merger": {
 			"file": "merger.md",
 			"model": "sonnet",
-			"tools": [
-				"Read",
-				"Write",
-				"Edit",
-				"Glob",
-				"Grep",
-				"Bash"
-			],
-			"capabilities": [
-				"merge",
-				"resolve-conflicts"
-			],
+			"tools": ["Read", "Write", "Edit", "Glob", "Grep", "Bash"],
+			"capabilities": ["merge", "resolve-conflicts"],
 			"canSpawn": false,
 			"constraints": []
 		}
 	},
 	"capabilityIndex": {
-		"explore": [
-			"scout"
-		],
-		"research": [
-			"scout"
-		],
-		"implement": [
-			"builder",
-			"lead"
-		],
-		"refactor": [
-			"builder"
-		],
-		"fix": [
-			"builder"
-		],
-		"review": [
-			"reviewer",
-			"lead"
-		],
-		"validate": [
-			"reviewer"
-		],
-		"coordinate": [
-			"lead"
-		],
-		"merge": [
-			"merger"
-		],
-		"resolve-conflicts": [
-			"merger"
-		]
+		"explore": ["scout"],
+		"research": ["scout"],
+		"implement": ["builder", "lead"],
+		"refactor": ["builder"],
+		"fix": ["builder"],
+		"review": ["reviewer", "lead"],
+		"validate": ["reviewer"],
+		"coordinate": ["lead"],
+		"merge": ["merger"],
+		"resolve-conflicts": ["merger"]
 	}
 }

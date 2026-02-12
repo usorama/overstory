@@ -102,7 +102,7 @@ async function handleClean(args: string[], root: string, json: boolean): Promise
 		const session = sessions.find((s) => s.worktreePath === wt.path);
 
 		// If --completed (default), only clean worktrees whose agent is done/zombie
-		if (completedOnly && session && session.state !== "zombie") {
+		if (completedOnly && session && session.state !== "completed" && session.state !== "zombie") {
 			continue;
 		}
 

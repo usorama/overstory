@@ -17,6 +17,8 @@ export interface MailStore {
 	getById(id: string): MailMessage | null;
 	getByThread(threadId: string): MailMessage[];
 	markRead(id: string): void;
+	/** Delete messages matching the given criteria. Returns the number of messages deleted. */
+	purge(options: { all?: boolean; olderThanMs?: number; agent?: string }): number;
 	close(): void;
 }
 
@@ -278,6 +280,46 @@ export function createMailStore(dbPath: string): MailStore {
 
 		markRead(id: string): void {
 			markReadStmt.run({ $id: id });
+		},
+
+		purge(options: { all?: boolean; olderThanMs?: number; agent?: string }): number {
+			// Count matching rows before deletion so we can report accurate numbers
+			if (options.all) {
+				const countRow = db
+					.prepare<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM messages")
+					.get();
+				const count = countRow?.cnt ?? 0;
+				db.prepare("DELETE FROM messages").run();
+				return count;
+			}
+
+			const conditions: string[] = [];
+			const params: Record<string, string> = {};
+
+			if (options.olderThanMs !== undefined) {
+				const cutoff = new Date(Date.now() - options.olderThanMs).toISOString();
+				conditions.push("created_at < $cutoff");
+				params.$cutoff = cutoff;
+			}
+
+			if (options.agent !== undefined) {
+				conditions.push("(from_agent = $agent OR to_agent = $agent)");
+				params.$agent = options.agent;
+			}
+
+			if (conditions.length === 0) {
+				return 0;
+			}
+
+			const whereClause = conditions.join(" AND ");
+			const countQuery = `SELECT COUNT(*) as cnt FROM messages WHERE ${whereClause}`;
+			const countRow = db.prepare<{ cnt: number }, Record<string, string>>(countQuery).get(params);
+			const count = countRow?.cnt ?? 0;
+
+			const deleteQuery = `DELETE FROM messages WHERE ${whereClause}`;
+			db.prepare<void, Record<string, string>>(deleteQuery).run(params);
+
+			return count;
 		},
 
 		close(): void {

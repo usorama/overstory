@@ -49,8 +49,8 @@ export function startDaemon(options: {
 		let updated = false;
 
 		for (const session of sessions) {
-			// Skip sessions already marked as zombie
-			if (session.state === "zombie") {
+			// Skip sessions that are already terminal
+			if (session.state === "zombie" || session.state === "completed") {
 				continue;
 			}
 

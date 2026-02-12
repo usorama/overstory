@@ -11,8 +11,9 @@ import type { AgentSession, AgentState, HealthCheck } from "../types.ts";
 const STATE_ORDER: Record<AgentState, number> = {
 	booting: 0,
 	working: 1,
-	stalled: 2,
-	zombie: 3,
+	completed: 2,
+	stalled: 3,
+	zombie: 4,
 };
 
 /**
@@ -45,6 +46,16 @@ export function evaluateHealth(
 		tmuxAlive,
 		lastActivity: session.lastActivity,
 	};
+
+	// Completed agents don't need health monitoring
+	if (session.state === "completed") {
+		return {
+			...base,
+			processAlive: tmuxAlive,
+			state: "completed",
+			action: "none",
+		};
+	}
 
 	// tmux dead → zombie
 	if (!tmuxAlive) {
