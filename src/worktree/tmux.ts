@@ -181,15 +181,189 @@ export async function listSessions(): Promise<Array<{ name: string; pid: number 
 }
 
 /**
- * Kill a tmux session by name.
+ * Grace period (ms) between SIGTERM and SIGKILL during process cleanup.
+ */
+const KILL_GRACE_PERIOD_MS = 2000;
+
+/**
+ * Get the pane PID for a tmux session.
+ *
+ * @param name - Tmux session name
+ * @returns The PID of the process running in the session's pane, or null if
+ *          the session doesn't exist or the PID can't be determined
+ */
+export async function getPanePid(name: string): Promise<number | null> {
+	const { exitCode, stdout } = await runCommand([
+		"tmux",
+		"display-message",
+		"-p",
+		"-t",
+		name,
+		"#{pane_pid}",
+	]);
+
+	if (exitCode !== 0) {
+		return null;
+	}
+
+	const pidStr = stdout.trim();
+	if (pidStr.length === 0) {
+		return null;
+	}
+
+	const pid = Number.parseInt(pidStr, 10);
+	return Number.isNaN(pid) ? null : pid;
+}
+
+/**
+ * Recursively collect all descendant PIDs of a given process.
+ *
+ * Uses `pgrep -P <pid>` to find direct children, then recurses into each child.
+ * Returns PIDs in depth-first order (deepest descendants first), which is the
+ * correct order for sending signals — kill children before parents so processes
+ * don't get reparented to init (PID 1).
+ *
+ * @param pid - The root process PID to walk from
+ * @returns Array of descendant PIDs, deepest-first
+ */
+export async function getDescendantPids(pid: number): Promise<number[]> {
+	const { exitCode, stdout } = await runCommand(["pgrep", "-P", String(pid)]);
+
+	// pgrep exits 1 when no children found — not an error
+	if (exitCode !== 0 || stdout.trim().length === 0) {
+		return [];
+	}
+
+	const childPids: number[] = [];
+	for (const line of stdout.trim().split("\n")) {
+		const childPid = Number.parseInt(line.trim(), 10);
+		if (!Number.isNaN(childPid)) {
+			childPids.push(childPid);
+		}
+	}
+
+	// Recurse into each child to get their descendants first (depth-first)
+	const allDescendants: number[] = [];
+	for (const childPid of childPids) {
+		const grandchildren = await getDescendantPids(childPid);
+		allDescendants.push(...grandchildren);
+	}
+
+	// Append the direct children after their descendants (deepest-first order)
+	allDescendants.push(...childPids);
+
+	return allDescendants;
+}
+
+/**
+ * Check if a process is still alive.
+ *
+ * @param pid - Process ID to check
+ * @returns true if the process exists, false otherwise
+ */
+export function isProcessAlive(pid: number): boolean {
+	try {
+		// signal 0 doesn't send a signal but checks if the process exists
+		process.kill(pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Kill a process tree: SIGTERM deepest-first, wait grace period, SIGKILL survivors.
+ *
+ * Follows gastown's KillSessionWithProcesses pattern:
+ * 1. Walk descendant tree from the root PID
+ * 2. Send SIGTERM to all descendants (deepest-first so children die before parents)
+ * 3. Wait a grace period for processes to clean up
+ * 4. Send SIGKILL to any survivors
+ *
+ * Handles edge cases:
+ * - Already-dead processes (ESRCH) — silently ignored
+ * - Reparented processes (PPID=1) — caught in the initial tree walk
+ * - Permission errors — silently ignored (process belongs to another user)
+ *
+ * @param rootPid - The root PID whose descendants should be killed
+ * @param gracePeriodMs - Time to wait between SIGTERM and SIGKILL (default 2000ms)
+ */
+export async function killProcessTree(
+	rootPid: number,
+	gracePeriodMs: number = KILL_GRACE_PERIOD_MS,
+): Promise<void> {
+	const descendants = await getDescendantPids(rootPid);
+
+	if (descendants.length === 0) {
+		// No descendants — just try to kill the root process
+		sendSignal(rootPid, "SIGTERM");
+		return;
+	}
+
+	// Phase 1: SIGTERM all descendants (deepest-first, then root)
+	for (const pid of descendants) {
+		sendSignal(pid, "SIGTERM");
+	}
+	sendSignal(rootPid, "SIGTERM");
+
+	// Phase 2: Wait grace period for processes to clean up
+	await Bun.sleep(gracePeriodMs);
+
+	// Phase 3: SIGKILL any survivors (same order: deepest-first, then root)
+	for (const pid of descendants) {
+		if (isProcessAlive(pid)) {
+			sendSignal(pid, "SIGKILL");
+		}
+	}
+	if (isProcessAlive(rootPid)) {
+		sendSignal(rootPid, "SIGKILL");
+	}
+}
+
+/**
+ * Send a signal to a process, ignoring errors for already-dead or inaccessible processes.
+ *
+ * @param pid - Process ID to signal
+ * @param signal - Signal name (e.g., "SIGTERM", "SIGKILL")
+ */
+function sendSignal(pid: number, signal: "SIGTERM" | "SIGKILL"): void {
+	try {
+		process.kill(pid, signal);
+	} catch {
+		// Process already dead (ESRCH), permission denied (EPERM), or invalid PID — all OK
+	}
+}
+
+/**
+ * Kill a tmux session by name, with proper process tree cleanup.
+ *
+ * Before killing the tmux session, walks the descendant process tree from the
+ * pane PID, sends SIGTERM to all descendants (deepest-first), waits a grace
+ * period, then sends SIGKILL to survivors. This ensures child processes
+ * (git, bun test, biome, etc.) are properly cleaned up rather than being
+ * orphaned or reparented to init.
  *
  * @param name - Session name to kill
- * @throws AgentError if the session does not exist or cannot be killed
+ * @throws AgentError if the tmux session cannot be killed (process cleanup
+ *         failures are silently handled since the goal is best-effort cleanup)
  */
 export async function killSession(name: string): Promise<void> {
+	// Step 1: Get the pane PID before killing the tmux session
+	const panePid = await getPanePid(name);
+
+	// Step 2: If we have a pane PID, walk and kill the process tree
+	if (panePid !== null) {
+		await killProcessTree(panePid);
+	}
+
+	// Step 3: Kill the tmux session itself
 	const { exitCode, stderr } = await runCommand(["tmux", "kill-session", "-t", name]);
 
 	if (exitCode !== 0) {
+		// If the session is already gone (e.g., died during process cleanup), that's fine
+		if (stderr.includes("session not found") || stderr.includes("can't find session")) {
+			return;
+		}
 		throw new AgentError(`Failed to kill tmux session "${name}": ${stderr.trim()}`, {
 			agentName: name,
 		});

@@ -14,7 +14,7 @@ export const DEFAULT_CONFIG: OverstoryConfig = {
 	},
 	agents: {
 		manifestPath: ".overstory/agent-manifest.json",
-		baseDir: "agents",
+		baseDir: ".overstory/agent-defs",
 		maxConcurrent: 5,
 		staggerDelayMs: 2_000,
 		maxDepth: 2,

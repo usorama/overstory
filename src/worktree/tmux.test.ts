@@ -1,6 +1,16 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { AgentError } from "../errors.ts";
-import { createSession, isSessionAlive, killSession, listSessions, sendKeys } from "./tmux.ts";
+import {
+	createSession,
+	getDescendantPids,
+	getPanePid,
+	isProcessAlive,
+	isSessionAlive,
+	killProcessTree,
+	killSession,
+	listSessions,
+	sendKeys,
+} from "./tmux.ts";
 
 /**
  * tmux tests use Bun.spawn mocks — legitimate exception to "never mock what you can use for real".
@@ -297,7 +307,7 @@ describe("listSessions", () => {
 	});
 });
 
-describe("killSession", () => {
+describe("getPanePid", () => {
 	let spawnSpy: ReturnType<typeof spyOn>;
 
 	beforeEach(() => {
@@ -308,25 +318,419 @@ describe("killSession", () => {
 		spawnSpy.mockRestore();
 	});
 
-	test("calls tmux kill-session with correct args", async () => {
+	test("returns PID from tmux display-message", async () => {
+		spawnSpy.mockImplementation(() => mockSpawnResult("42\n", "", 0));
+
+		const pid = await getPanePid("overstory-auth");
+
+		expect(pid).toBe(42);
+		const callArgs = spawnSpy.mock.calls[0] as unknown[];
+		const cmd = callArgs[0] as string[];
+		expect(cmd).toEqual(["tmux", "display-message", "-p", "-t", "overstory-auth", "#{pane_pid}"]);
+	});
+
+	test("returns null when session does not exist", async () => {
+		spawnSpy.mockImplementation(() => mockSpawnResult("", "can't find session: gone", 1));
+
+		const pid = await getPanePid("gone");
+
+		expect(pid).toBeNull();
+	});
+
+	test("returns null when output is empty", async () => {
 		spawnSpy.mockImplementation(() => mockSpawnResult("", "", 0));
+
+		const pid = await getPanePid("empty-output");
+
+		expect(pid).toBeNull();
+	});
+
+	test("returns null when output is not a number", async () => {
+		spawnSpy.mockImplementation(() => mockSpawnResult("not-a-pid\n", "", 0));
+
+		const pid = await getPanePid("bad-output");
+
+		expect(pid).toBeNull();
+	});
+});
+
+describe("getDescendantPids", () => {
+	let spawnSpy: ReturnType<typeof spyOn>;
+
+	beforeEach(() => {
+		spawnSpy = spyOn(Bun, "spawn");
+	});
+
+	afterEach(() => {
+		spawnSpy.mockRestore();
+	});
+
+	test("returns empty array when process has no children", async () => {
+		spawnSpy.mockImplementation(() => mockSpawnResult("", "", 1));
+
+		const pids = await getDescendantPids(100);
+
+		expect(pids).toEqual([]);
+	});
+
+	test("returns direct children when they have no grandchildren", async () => {
+		let callCount = 0;
+		spawnSpy.mockImplementation(() => {
+			callCount++;
+			if (callCount === 1) {
+				// pgrep -P 100 → children 200, 300
+				return mockSpawnResult("200\n300\n", "", 0);
+			}
+			// pgrep -P 200 and pgrep -P 300 → no grandchildren
+			return mockSpawnResult("", "", 1);
+		});
+
+		const pids = await getDescendantPids(100);
+
+		expect(pids).toEqual([200, 300]);
+	});
+
+	test("returns descendants in depth-first order (deepest first)", async () => {
+		// Tree: 100 → 200 → 400
+		//             → 300
+		let callCount = 0;
+		spawnSpy.mockImplementation(() => {
+			callCount++;
+			if (callCount === 1) {
+				// pgrep -P 100 → children 200, 300
+				return mockSpawnResult("200\n300\n", "", 0);
+			}
+			if (callCount === 2) {
+				// pgrep -P 200 → child 400
+				return mockSpawnResult("400\n", "", 0);
+			}
+			if (callCount === 3) {
+				// pgrep -P 400 → no children
+				return mockSpawnResult("", "", 1);
+			}
+			// pgrep -P 300 → no children
+			return mockSpawnResult("", "", 1);
+		});
+
+		const pids = await getDescendantPids(100);
+
+		// Deepest-first: 400 (grandchild), then 200, 300 (direct children)
+		expect(pids).toEqual([400, 200, 300]);
+	});
+
+	test("handles deeply nested tree", async () => {
+		// Tree: 1 → 2 → 3 → 4
+		let callCount = 0;
+		spawnSpy.mockImplementation(() => {
+			callCount++;
+			if (callCount === 1) {
+				// pgrep -P 1 → 2
+				return mockSpawnResult("2\n", "", 0);
+			}
+			if (callCount === 2) {
+				// pgrep -P 2 → 3
+				return mockSpawnResult("3\n", "", 0);
+			}
+			if (callCount === 3) {
+				// pgrep -P 3 → 4
+				return mockSpawnResult("4\n", "", 0);
+			}
+			// pgrep -P 4 → no children
+			return mockSpawnResult("", "", 1);
+		});
+
+		const pids = await getDescendantPids(1);
+
+		// Deepest-first: 4, 3, 2
+		expect(pids).toEqual([4, 3, 2]);
+	});
+
+	test("skips non-numeric pgrep output lines", async () => {
+		spawnSpy.mockImplementation((...args: unknown[]) => {
+			const cmd = (args[0] as string[])[2];
+			if (cmd === "100") {
+				return mockSpawnResult("200\nnot-a-pid\n300\n", "", 0);
+			}
+			return mockSpawnResult("", "", 1);
+		});
+
+		const pids = await getDescendantPids(100);
+
+		expect(pids).toEqual([200, 300]);
+	});
+});
+
+describe("isProcessAlive", () => {
+	test("returns true for current process (self-check)", () => {
+		// process.pid is always alive
+		expect(isProcessAlive(process.pid)).toBe(true);
+	});
+
+	test("returns false for a non-existent PID", () => {
+		// PID 2147483647 (max int32) is extremely unlikely to exist
+		expect(isProcessAlive(2147483647)).toBe(false);
+	});
+});
+
+describe("killProcessTree", () => {
+	let spawnSpy: ReturnType<typeof spyOn>;
+	let killSpy: ReturnType<typeof spyOn>;
+
+	beforeEach(() => {
+		spawnSpy = spyOn(Bun, "spawn");
+		killSpy = spyOn(process, "kill");
+	});
+
+	afterEach(() => {
+		spawnSpy.mockRestore();
+		killSpy.mockRestore();
+	});
+
+	test("sends SIGTERM to root when no descendants", async () => {
+		// pgrep -P 100 → no children
+		spawnSpy.mockImplementation(() => mockSpawnResult("", "", 1));
+		killSpy.mockImplementation(() => true);
+
+		await killProcessTree(100, 0);
+
+		expect(killSpy).toHaveBeenCalledWith(100, "SIGTERM");
+	});
+
+	test("sends SIGTERM deepest-first then SIGKILL survivors", async () => {
+		// Tree: 100 → 200 → 300
+		let pgrepCallCount = 0;
+		spawnSpy.mockImplementation(() => {
+			pgrepCallCount++;
+			if (pgrepCallCount === 1) {
+				// pgrep -P 100 → 200
+				return mockSpawnResult("200\n", "", 0);
+			}
+			if (pgrepCallCount === 2) {
+				// pgrep -P 200 → 300
+				return mockSpawnResult("300\n", "", 0);
+			}
+			// pgrep -P 300 → no children
+			return mockSpawnResult("", "", 1);
+		});
+
+		const signals: Array<{ pid: number; signal: string }> = [];
+		killSpy.mockImplementation((pid: number, signal: string | number) => {
+			signals.push({ pid, signal: String(signal) });
+			return true;
+		});
+
+		await killProcessTree(100, 0);
+
+		// Phase 1 (SIGTERM): deepest-first → 300, 200, then root 100
+		// Phase 2 (SIGKILL): isProcessAlive check (signal 0), then SIGKILL for survivors
+		const sigterms = signals.filter((s) => s.signal === "SIGTERM");
+		expect(sigterms).toEqual([
+			{ pid: 300, signal: "SIGTERM" },
+			{ pid: 200, signal: "SIGTERM" },
+			{ pid: 100, signal: "SIGTERM" },
+		]);
+	});
+
+	test("sends SIGKILL to survivors after grace period", async () => {
+		// Tree: 100 → 200 (no grandchildren)
+		let pgrepCallCount = 0;
+		spawnSpy.mockImplementation(() => {
+			pgrepCallCount++;
+			if (pgrepCallCount === 1) {
+				return mockSpawnResult("200\n", "", 0);
+			}
+			return mockSpawnResult("", "", 1);
+		});
+
+		const signals: Array<{ pid: number; signal: string | number }> = [];
+		killSpy.mockImplementation((pid: number, signal: string | number) => {
+			signals.push({ pid, signal });
+			// signal 0 is the isProcessAlive check — simulate processes still alive
+			return true;
+		});
+
+		await killProcessTree(100, 10); // 10ms grace period for test speed
+
+		// Should have: SIGTERM(200), SIGTERM(100), alive-check(200), SIGKILL(200),
+		//              alive-check(100), SIGKILL(100)
+		const sigkills = signals.filter((s) => s.signal === "SIGKILL");
+		expect(sigkills.length).toBe(2);
+		expect(sigkills[0]).toEqual({ pid: 200, signal: "SIGKILL" });
+		expect(sigkills[1]).toEqual({ pid: 100, signal: "SIGKILL" });
+	});
+
+	test("skips SIGKILL for processes that died during grace period", async () => {
+		// No children
+		spawnSpy.mockImplementation(() => mockSpawnResult("200\n", "", 0));
+		// First call for pgrep children of 200
+		let pgrepCallCount = 0;
+		spawnSpy.mockImplementation(() => {
+			pgrepCallCount++;
+			if (pgrepCallCount === 1) {
+				return mockSpawnResult("200\n", "", 0);
+			}
+			return mockSpawnResult("", "", 1);
+		});
+
+		const signals: Array<{ pid: number; signal: string | number }> = [];
+		killSpy.mockImplementation((pid: number, signal: string | number) => {
+			signals.push({ pid, signal });
+			// signal 0 (isProcessAlive) — processes are dead
+			if (signal === 0) {
+				throw new Error("ESRCH");
+			}
+			return true;
+		});
+
+		await killProcessTree(100, 10);
+
+		// Should have SIGTERM calls but no SIGKILL (processes died)
+		const sigkills = signals.filter((s) => s.signal === "SIGKILL");
+		expect(sigkills).toEqual([]);
+	});
+
+	test("silently handles SIGTERM errors for already-dead processes", async () => {
+		// No children
+		spawnSpy.mockImplementation(() => mockSpawnResult("", "", 1));
+
+		killSpy.mockImplementation(() => {
+			throw new Error("ESRCH: No such process");
+		});
+
+		// Should not throw
+		await killProcessTree(100, 0);
+	});
+});
+
+describe("killSession", () => {
+	let spawnSpy: ReturnType<typeof spyOn>;
+	let killSpy: ReturnType<typeof spyOn>;
+
+	beforeEach(() => {
+		spawnSpy = spyOn(Bun, "spawn");
+		killSpy = spyOn(process, "kill");
+	});
+
+	afterEach(() => {
+		spawnSpy.mockRestore();
+		killSpy.mockRestore();
+	});
+
+	test("gets pane PID, kills process tree, then kills tmux session", async () => {
+		const cmds: string[][] = [];
+		spawnSpy.mockImplementation((...args: unknown[]) => {
+			const cmd = args[0] as string[];
+			cmds.push(cmd);
+
+			if (cmd[0] === "tmux" && cmd[1] === "display-message") {
+				// getPanePid → returns PID 500
+				return mockSpawnResult("500\n", "", 0);
+			}
+			if (cmd[0] === "pgrep") {
+				// getDescendantPids → no children
+				return mockSpawnResult("", "", 1);
+			}
+			if (cmd[0] === "tmux" && cmd[1] === "kill-session") {
+				return mockSpawnResult("", "", 0);
+			}
+			return mockSpawnResult("", "", 0);
+		});
+
+		killSpy.mockImplementation(() => true);
 
 		await killSession("overstory-auth");
 
-		expect(spawnSpy).toHaveBeenCalledTimes(1);
-		const callArgs = spawnSpy.mock.calls[0] as unknown[];
-		const cmd = callArgs[0] as string[];
-		expect(cmd).toEqual(["tmux", "kill-session", "-t", "overstory-auth"]);
+		// Should have called: tmux display-message, pgrep, tmux kill-session
+		expect(cmds[0]).toEqual([
+			"tmux",
+			"display-message",
+			"-p",
+			"-t",
+			"overstory-auth",
+			"#{pane_pid}",
+		]);
+		expect(cmds[1]).toEqual(["pgrep", "-P", "500"]);
+		const lastCmd = cmds[cmds.length - 1];
+		expect(lastCmd).toEqual(["tmux", "kill-session", "-t", "overstory-auth"]);
+
+		// Should have sent SIGTERM to root PID 500
+		expect(killSpy).toHaveBeenCalledWith(500, "SIGTERM");
 	});
 
-	test("throws AgentError on failure", async () => {
-		spawnSpy.mockImplementation(() => mockSpawnResult("", "session not found: nonexistent", 1));
+	test("skips process cleanup when pane PID is not available", async () => {
+		const cmds: string[][] = [];
+		spawnSpy.mockImplementation((...args: unknown[]) => {
+			const cmd = args[0] as string[];
+			cmds.push(cmd);
 
-		await expect(killSession("nonexistent")).rejects.toThrow(AgentError);
+			if (cmd[0] === "tmux" && cmd[1] === "display-message") {
+				// getPanePid → session not found
+				return mockSpawnResult("", "can't find session", 1);
+			}
+			if (cmd[0] === "tmux" && cmd[1] === "kill-session") {
+				return mockSpawnResult("", "", 0);
+			}
+			return mockSpawnResult("", "", 0);
+		});
+
+		await killSession("overstory-auth");
+
+		// Should go straight to tmux kill-session (no pgrep calls)
+		expect(cmds).toHaveLength(2);
+		expect(cmds[0]?.[1]).toBe("display-message");
+		expect(cmds[1]?.[1]).toBe("kill-session");
+		// No process.kill calls since we had no PID
+		expect(killSpy).not.toHaveBeenCalled();
 	});
 
-	test("AgentError contains session name", async () => {
-		spawnSpy.mockImplementation(() => mockSpawnResult("", "session not found: ghost-agent", 1));
+	test("succeeds silently when session is already gone after process cleanup", async () => {
+		spawnSpy.mockImplementation((...args: unknown[]) => {
+			const cmd = args[0] as string[];
+			if (cmd[0] === "tmux" && cmd[1] === "display-message") {
+				return mockSpawnResult("500\n", "", 0);
+			}
+			if (cmd[0] === "pgrep") {
+				return mockSpawnResult("", "", 1);
+			}
+			if (cmd[0] === "tmux" && cmd[1] === "kill-session") {
+				// Session already gone after process cleanup
+				return mockSpawnResult("", "can't find session: overstory-auth", 1);
+			}
+			return mockSpawnResult("", "", 0);
+		});
+
+		killSpy.mockImplementation(() => true);
+
+		// Should not throw — session disappearing is expected
+		await killSession("overstory-auth");
+	});
+
+	test("throws AgentError on unexpected tmux kill-session failure", async () => {
+		spawnSpy.mockImplementation((...args: unknown[]) => {
+			const cmd = args[0] as string[];
+			if (cmd[0] === "tmux" && cmd[1] === "display-message") {
+				return mockSpawnResult("", "can't find session", 1);
+			}
+			if (cmd[0] === "tmux" && cmd[1] === "kill-session") {
+				return mockSpawnResult("", "server exited unexpectedly", 1);
+			}
+			return mockSpawnResult("", "", 0);
+		});
+
+		await expect(killSession("broken-session")).rejects.toThrow(AgentError);
+	});
+
+	test("AgentError contains session name on failure", async () => {
+		spawnSpy.mockImplementation((...args: unknown[]) => {
+			const cmd = args[0] as string[];
+			if (cmd[0] === "tmux" && cmd[1] === "display-message") {
+				return mockSpawnResult("", "error", 1);
+			}
+			if (cmd[0] === "tmux" && cmd[1] === "kill-session") {
+				return mockSpawnResult("", "server exited unexpectedly", 1);
+			}
+			return mockSpawnResult("", "", 0);
+		});
 
 		try {
 			await killSession("ghost-agent");

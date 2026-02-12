@@ -11,6 +11,7 @@ import { loadConfig } from "../config.ts";
 import { OverstoryError } from "../errors.ts";
 import type { HealthCheck } from "../types.ts";
 import { startDaemon } from "../watchdog/daemon.ts";
+import { isProcessRunning } from "../watchdog/health.ts";
 
 /**
  * Parse a named flag value from args.
@@ -31,22 +32,23 @@ function hasFlag(args: string[], flag: string): boolean {
  * Format a health check for display.
  */
 function formatCheck(check: HealthCheck): string {
-	const actionIcon = check.action === "terminate" ? "💀" : check.action === "escalate" ? "⚠️" : "✅";
-	return `${actionIcon} ${check.agentName}: ${check.state} (tmux=${check.tmuxAlive ? "up" : "down"}, pid=${check.processAlive ? "up" : "down"})`;
+	const actionIcon =
+		check.action === "terminate"
+			? "💀"
+			: check.action === "escalate"
+				? "⚠️"
+				: check.action === "investigate"
+					? "🔍"
+					: "✅";
+	const pidLabel = check.pidAlive === null ? "n/a" : check.pidAlive ? "up" : "down";
+	let line = `${actionIcon} ${check.agentName}: ${check.state} (tmux=${check.tmuxAlive ? "up" : "down"}, pid=${pidLabel})`;
+	if (check.reconciliationNote) {
+		line += ` [${check.reconciliationNote}]`;
+	}
+	return line;
 }
 
-/**
- * Check whether a process with the given PID is still running.
- */
-function isProcessRunning(pid: number): boolean {
-	try {
-		// Signal 0 doesn't kill the process — just checks if it exists
-		process.kill(pid, 0);
-		return true;
-	} catch {
-		return false;
-	}
-}
+// isProcessRunning is imported from ../watchdog/health.ts (ZFC shared utility)
 
 /**
  * Read the PID from the watchdog PID file.

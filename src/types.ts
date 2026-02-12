@@ -152,9 +152,12 @@ export interface HealthCheck {
 	timestamp: string;
 	processAlive: boolean;
 	tmuxAlive: boolean;
+	pidAlive: boolean | null; // null when pid is unavailable
 	lastActivity: string;
 	state: AgentState;
-	action: "none" | "escalate" | "terminate";
+	action: "none" | "escalate" | "terminate" | "investigate";
+	/** Describes any conflict between observable state and recorded state. */
+	reconciliationNote: string | null;
 }
 
 // === Logging ===

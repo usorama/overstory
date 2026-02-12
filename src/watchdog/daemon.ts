@@ -4,6 +4,9 @@
  * Runs on a configurable interval, checking the health of all active agent
  * sessions. Handles automatic termination of zombie agents and escalation
  * of stalled agents to Tier 2 triage.
+ *
+ * ZFC Principle: Observable state (tmux alive, pid alive) is the source of
+ * truth. See health.ts for the full ZFC documentation.
  */
 
 import { join } from "node:path";
@@ -17,10 +20,12 @@ import { triageAgent } from "./triage.ts";
  *
  * On each tick:
  * 1. Loads sessions.json from {root}/.overstory/sessions.json
- * 2. For each non-zombie session, checks tmux liveness and evaluates health
+ * 2. For each session (including zombies — ZFC requires re-checking observable
+ *    state), checks tmux liveness and evaluates health
  * 3. Terminates zombie agents (kills tmux session, updates state)
- * 4. Escalates stalled agents to AI triage
- * 5. Persists updated session states back to sessions.json
+ * 4. Flags "investigate" cases where tmux is alive but sessions.json says zombie
+ * 5. Escalates stalled agents to AI triage
+ * 6. Persists updated session states back to sessions.json
  *
  * @param options.root - Project root directory (contains .overstory/)
  * @param options.intervalMs - Polling interval in milliseconds
@@ -49,15 +54,18 @@ export function startDaemon(options: {
 		let updated = false;
 
 		for (const session of sessions) {
-			// Skip sessions that are already terminal
-			if (session.state === "zombie" || session.state === "completed") {
+			// Skip completed sessions — they are terminal and don't need monitoring
+			if (session.state === "completed") {
 				continue;
 			}
+
+			// ZFC: Don't skip zombies. Re-check tmux liveness on every tick.
+			// A zombie with a live tmux session needs investigation, not silence.
 
 			const tmuxAlive = await isSessionAlive(session.tmuxSession);
 			const check = evaluateHealth(session, tmuxAlive, thresholds);
 
-			// Transition state forward only
+			// Transition state forward only (investigate action holds state)
 			const newState = transitionState(session.state, check);
 			if (newState !== session.state) {
 				session.state = newState;
@@ -79,6 +87,11 @@ export function startDaemon(options: {
 				}
 				session.state = "zombie";
 				updated = true;
+			} else if (check.action === "investigate") {
+				// ZFC: tmux alive but sessions.json says zombie.
+				// Log the conflict but do NOT auto-kill.
+				// The onHealthCheck callback surfaces this to the operator.
+				// No state change — keep zombie until a human or higher-tier agent decides.
 			} else if (check.action === "escalate") {
 				// Delegate to Tier 2 AI triage
 				const verdict = await triageAgent({
