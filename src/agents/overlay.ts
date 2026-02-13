@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { AgentError } from "../errors.ts";
@@ -185,18 +184,22 @@ export async function generateOverlay(config: OverlayConfig): Promise<string> {
 }
 
 /**
- * Check whether a directory is the canonical project root (contains `.overstory/config.yaml`).
+ * Check whether a directory is the canonical project root by comparing resolved paths.
  *
  * Agent overlays must NEVER be written to the canonical repo root -- they belong
  * in worktrees. Writing an overlay to the project root overwrites the orchestrator's
  * `.claude/CLAUDE.md`, breaking the user's own Claude Code session (overstory-uwg4).
  *
+ * Uses deterministic path comparison instead of checking for `.overstory/config.yaml`
+ * because when dogfooding (running overstory on its own repo), that file is tracked
+ * in git and appears in every worktree checkout (overstory-p4st).
+ *
  * @param dir - Absolute path to check
- * @returns true if the directory appears to be the canonical project root
+ * @param canonicalRoot - Absolute path to the canonical project root
+ * @returns true if dir resolves to the same path as canonicalRoot
  */
-export function isCanonicalRoot(dir: string): boolean {
-	const resolved = resolve(dir);
-	return existsSync(join(resolved, ".overstory", "config.yaml"));
+export function isCanonicalRoot(dir: string, canonicalRoot: string): boolean {
+	return resolve(dir) === resolve(canonicalRoot);
 }
 
 /**
@@ -208,15 +211,21 @@ export function isCanonicalRoot(dir: string): boolean {
  *
  * @param worktreePath - Absolute path to the agent's git worktree
  * @param config - The overlay configuration for this agent/task
+ * @param canonicalRoot - Absolute path to the canonical project root (for guard check)
  * @throws {AgentError} If worktreePath is the canonical project root, or if
  *   the directory cannot be created or the file cannot be written
  */
-export async function writeOverlay(worktreePath: string, config: OverlayConfig): Promise<void> {
+export async function writeOverlay(
+	worktreePath: string,
+	config: OverlayConfig,
+	canonicalRoot: string,
+): Promise<void> {
 	// Guard: never write agent overlays to the canonical project root.
 	// The project root's .claude/CLAUDE.md belongs to the orchestrator/user.
-	// If worktreePath points to a directory containing .overstory/config.yaml,
-	// it's the canonical root, not a worktree (overstory-uwg4).
-	if (isCanonicalRoot(worktreePath)) {
+	// Uses path comparison instead of file-existence heuristic to handle
+	// dogfooding scenarios where .overstory/config.yaml is tracked in git
+	// and appears in every worktree checkout (overstory-p4st).
+	if (isCanonicalRoot(worktreePath, canonicalRoot)) {
 		throw new AgentError(
 			`Refusing to write overlay to canonical project root: ${worktreePath}. Agent overlays must target a worktree, not the orchestrator's root directory. This prevents overwriting the user's .claude/CLAUDE.md.`,
 			{ agentName: config.agentName },

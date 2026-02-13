@@ -183,7 +183,7 @@ describe("E2E: init→sling lifecycle on external project", () => {
 		const { mkdir } = await import("node:fs/promises");
 		await mkdir(worktreePath, { recursive: true });
 
-		await writeOverlay(worktreePath, overlayConfig);
+		await writeOverlay(worktreePath, overlayConfig, tempDir);
 
 		// Verify the overlay was written
 		const overlayPath = join(worktreePath, ".claude", "CLAUDE.md");
@@ -249,7 +249,7 @@ describe("E2E: init→sling lifecycle on external project", () => {
 		const { mkdir } = await import("node:fs/promises");
 		await mkdir(worktreePath, { recursive: true });
 
-		await writeOverlay(worktreePath, overlayConfig);
+		await writeOverlay(worktreePath, overlayConfig, tempDir);
 
 		const overlayContent = await Bun.file(join(worktreePath, ".claude", "CLAUDE.md")).text();
 

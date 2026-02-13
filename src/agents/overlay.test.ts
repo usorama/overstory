@@ -341,7 +341,7 @@ describe("writeOverlay", () => {
 		const worktreePath = join(tempDir, "worktree");
 		const config = makeConfig();
 
-		await writeOverlay(worktreePath, config);
+		await writeOverlay(worktreePath, config, "/nonexistent-canonical-root");
 
 		const outputPath = join(worktreePath, ".claude", "CLAUDE.md");
 		const file = Bun.file(outputPath);
@@ -353,7 +353,7 @@ describe("writeOverlay", () => {
 		const worktreePath = join(tempDir, "worktree");
 		const config = makeConfig({ agentName: "file-writer-test" });
 
-		await writeOverlay(worktreePath, config);
+		await writeOverlay(worktreePath, config, "/nonexistent-canonical-root");
 
 		const outputPath = join(worktreePath, ".claude", "CLAUDE.md");
 		const content = await Bun.file(outputPath).text();
@@ -368,7 +368,7 @@ describe("writeOverlay", () => {
 		await mkdir(worktreePath, { recursive: true });
 
 		const config = makeConfig();
-		await writeOverlay(worktreePath, config);
+		await writeOverlay(worktreePath, config, "/nonexistent-canonical-root");
 
 		const outputPath = join(worktreePath, ".claude", "CLAUDE.md");
 		const exists = await Bun.file(outputPath).exists();
@@ -383,7 +383,7 @@ describe("writeOverlay", () => {
 		await Bun.write(join(claudeDir, "CLAUDE.md"), "old content");
 
 		const config = makeConfig({ agentName: "new-agent" });
-		await writeOverlay(worktreePath, config);
+		await writeOverlay(worktreePath, config, "/nonexistent-canonical-root");
 
 		const content = await Bun.file(join(claudeDir, "CLAUDE.md")).text();
 		expect(content).toContain("new-agent");
@@ -395,34 +395,31 @@ describe("writeOverlay", () => {
 		const config = makeConfig();
 
 		const generated = await generateOverlay(config);
-		await writeOverlay(worktreePath, config);
+		await writeOverlay(worktreePath, config, "/nonexistent-canonical-root");
 
 		const written = await Bun.file(join(worktreePath, ".claude", "CLAUDE.md")).text();
 		expect(written).toBe(generated);
 	});
 
 	test("throws AgentError when worktreePath is the canonical project root", async () => {
-		// Simulate a canonical project root by creating .overstory/config.yaml
 		const fakeProjectRoot = join(tempDir, "project-root");
-		await mkdir(join(fakeProjectRoot, ".overstory"), { recursive: true });
-		await Bun.write(join(fakeProjectRoot, ".overstory", "config.yaml"), "project:\n  name: test\n");
+		await mkdir(fakeProjectRoot, { recursive: true });
 
 		const config = makeConfig({ agentName: "rogue-agent" });
 
 		expect(async () => {
-			await writeOverlay(fakeProjectRoot, config);
+			await writeOverlay(fakeProjectRoot, config, fakeProjectRoot);
 		}).toThrow(AgentError);
 	});
 
 	test("error message mentions canonical project root when guard triggers", async () => {
 		const fakeProjectRoot = join(tempDir, "project-root-msg");
-		await mkdir(join(fakeProjectRoot, ".overstory"), { recursive: true });
-		await Bun.write(join(fakeProjectRoot, ".overstory", "config.yaml"), "project:\n  name: test\n");
+		await mkdir(fakeProjectRoot, { recursive: true });
 
 		const config = makeConfig({ agentName: "rogue-agent" });
 
 		try {
-			await writeOverlay(fakeProjectRoot, config);
+			await writeOverlay(fakeProjectRoot, config, fakeProjectRoot);
 			expect.unreachable("should have thrown");
 		} catch (err) {
 			expect(err).toBeInstanceOf(AgentError);
@@ -434,17 +431,14 @@ describe("writeOverlay", () => {
 	});
 
 	test("does NOT throw when worktreePath is a proper worktree subdirectory", async () => {
-		// Create a fake project root with .overstory/config.yaml at the parent
 		const fakeProjectRoot = join(tempDir, "project-with-worktrees");
 		await mkdir(join(fakeProjectRoot, ".overstory", "worktrees", "my-agent"), { recursive: true });
-		await Bun.write(join(fakeProjectRoot, ".overstory", "config.yaml"), "project:\n  name: test\n");
 
-		// The worktree itself should NOT have .overstory/config.yaml
 		const worktreePath = join(fakeProjectRoot, ".overstory", "worktrees", "my-agent");
 		const config = makeConfig();
 
 		// This should succeed — the worktree is not the canonical root
-		await writeOverlay(worktreePath, config);
+		await writeOverlay(worktreePath, config, fakeProjectRoot);
 
 		const outputPath = join(worktreePath, ".claude", "CLAUDE.md");
 		const exists = await Bun.file(outputPath).exists();
@@ -453,13 +447,12 @@ describe("writeOverlay", () => {
 
 	test("does not write CLAUDE.md when guard rejects the path", async () => {
 		const fakeProjectRoot = join(tempDir, "project-no-write");
-		await mkdir(join(fakeProjectRoot, ".overstory"), { recursive: true });
-		await Bun.write(join(fakeProjectRoot, ".overstory", "config.yaml"), "project:\n  name: test\n");
+		await mkdir(fakeProjectRoot, { recursive: true });
 
 		const config = makeConfig();
 
 		try {
-			await writeOverlay(fakeProjectRoot, config);
+			await writeOverlay(fakeProjectRoot, config, fakeProjectRoot);
 		} catch {
 			// Expected
 		}
@@ -469,54 +462,52 @@ describe("writeOverlay", () => {
 		const exists = await Bun.file(claudeMdPath).exists();
 		expect(exists).toBe(false);
 	});
+
+	test("succeeds for worktree with .overstory/config.yaml (dogfooding scenario)", async () => {
+		// When dogfooding on overstory's own repo, .overstory/config.yaml is tracked
+		// in git. Every worktree checkout includes it. The old file-existence heuristic
+		// would incorrectly reject these worktrees. The path-comparison guard must allow
+		// writes because the worktree path differs from the canonical root (overstory-p4st).
+		const fakeProjectRoot = join(tempDir, "overstory-dogfood");
+		const worktreePath = join(fakeProjectRoot, ".overstory", "worktrees", "dogfood-agent");
+		await mkdir(join(worktreePath, ".overstory"), { recursive: true });
+		// Simulate tracked .overstory/config.yaml appearing in the worktree checkout
+		await Bun.write(
+			join(worktreePath, ".overstory", "config.yaml"),
+			"project:\n  name: overstory\n",
+		);
+
+		const config = makeConfig({ agentName: "dogfood-agent" });
+
+		// Must succeed — worktreePath !== fakeProjectRoot even though config.yaml exists
+		await writeOverlay(worktreePath, config, fakeProjectRoot);
+
+		const outputPath = join(worktreePath, ".claude", "CLAUDE.md");
+		const exists = await Bun.file(outputPath).exists();
+		expect(exists).toBe(true);
+	});
 });
 
 describe("isCanonicalRoot", () => {
-	let tempDir: string;
-
-	beforeEach(async () => {
-		tempDir = await mkdtemp(join(tmpdir(), "overstory-canonical-test-"));
+	test("returns true when dir matches canonicalRoot", () => {
+		expect(isCanonicalRoot("/projects/my-app", "/projects/my-app")).toBe(true);
 	});
 
-	afterEach(async () => {
-		await rm(tempDir, { recursive: true, force: true });
+	test("returns true when paths resolve to the same location", () => {
+		expect(isCanonicalRoot("/projects/my-app/./", "/projects/my-app")).toBe(true);
 	});
 
-	test("returns true when .overstory/config.yaml exists", async () => {
-		await mkdir(join(tempDir, ".overstory"), { recursive: true });
-		await Bun.write(join(tempDir, ".overstory", "config.yaml"), "project:\n  name: test\n");
-
-		expect(isCanonicalRoot(tempDir)).toBe(true);
+	test("returns false when dir differs from canonicalRoot", () => {
+		expect(
+			isCanonicalRoot("/projects/my-app/.overstory/worktrees/agent-1", "/projects/my-app"),
+		).toBe(false);
 	});
 
-	test("returns false when .overstory/ does not exist", () => {
-		expect(isCanonicalRoot(tempDir)).toBe(false);
-	});
-
-	test("returns false when .overstory/ exists but config.yaml does not", async () => {
-		await mkdir(join(tempDir, ".overstory"), { recursive: true });
-
-		expect(isCanonicalRoot(tempDir)).toBe(false);
-	});
-
-	test("returns false for a worktree subdirectory", async () => {
-		// Create .overstory/config.yaml at the project root
-		await mkdir(join(tempDir, ".overstory", "worktrees", "agent-1"), { recursive: true });
-		await Bun.write(join(tempDir, ".overstory", "config.yaml"), "project:\n  name: test\n");
-
-		// The worktree subdirectory itself has no .overstory/config.yaml
-		const worktreePath = join(tempDir, ".overstory", "worktrees", "agent-1");
-		expect(isCanonicalRoot(worktreePath)).toBe(false);
-	});
-
-	test("returns true for the real overstory project root", () => {
-		// The actual overstory repo has .overstory/config.yaml
-		// This verifies the guard works on the real project
-		const overstoryRoot = join(import.meta.dir, "..", "..");
-		// Only assert if the real project config exists (it should in this repo)
-		const { existsSync } = require("node:fs") as typeof import("node:fs");
-		if (existsSync(join(overstoryRoot, ".overstory", "config.yaml"))) {
-			expect(isCanonicalRoot(overstoryRoot)).toBe(true);
-		}
+	test("returns false for worktree even when it contains .overstory/config.yaml (dogfooding)", () => {
+		// This is the core dogfooding scenario: the worktree has .overstory/config.yaml
+		// because it's tracked in git, but the path is different from the canonical root.
+		const canonicalRoot = "/projects/overstory";
+		const worktreePath = "/projects/overstory/.overstory/worktrees/dogfood-agent";
+		expect(isCanonicalRoot(worktreePath, canonicalRoot)).toBe(false);
 	});
 });

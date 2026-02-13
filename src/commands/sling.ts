@@ -361,7 +361,22 @@ export async function slingCommand(args: string[]): Promise<void> {
 		baseDefinition,
 	};
 
-	await writeOverlay(worktreePath, overlayConfig);
+	try {
+		await writeOverlay(worktreePath, overlayConfig, config.project.root);
+	} catch (err) {
+		// Clean up the orphaned worktree created in step 6 (overstory-p4st)
+		try {
+			const cleanupProc = Bun.spawn(["git", "worktree", "remove", "--force", worktreePath], {
+				cwd: config.project.root,
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			await cleanupProc.exited;
+		} catch {
+			// Best-effort cleanup; the original error is more important
+		}
+		throw err;
+	}
 
 	// 8. Deploy hooks config (capability-specific guards)
 	await deployHooks(worktreePath, name, capability);
