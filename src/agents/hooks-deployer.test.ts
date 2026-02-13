@@ -5,9 +5,13 @@ import { join } from "node:path";
 import { AgentError } from "../errors.ts";
 import {
 	buildBashFileGuardScript,
+	buildBashPathBoundaryScript,
+	buildPathBoundaryGuardScript,
 	deployHooks,
+	getBashPathBoundaryGuards,
 	getCapabilityGuards,
 	getDangerGuards,
+	getPathBoundaryGuards,
 } from "./hooks-deployer.ts";
 
 describe("deployHooks", () => {
@@ -197,6 +201,76 @@ describe("deployHooks", () => {
 		expect(preCompact.hooks[0].command).toBe("overstory prime --agent compact-agent --compact");
 	});
 
+	test("PreToolUse hook pipes stdin to overstory log with --stdin flag", async () => {
+		const worktreePath = join(tempDir, "worktree");
+
+		await deployHooks(worktreePath, "stdin-agent");
+
+		const outputPath = join(worktreePath, ".claude", "settings.local.json");
+		const content = await Bun.file(outputPath).text();
+		const parsed = JSON.parse(content);
+
+		// Find the base PreToolUse hook (matcher == "")
+		const preToolUse = parsed.hooks.PreToolUse;
+		const baseHook = preToolUse.find((h: { matcher: string }) => h.matcher === "");
+		expect(baseHook).toBeDefined();
+		expect(baseHook.hooks[0].command).toContain("--stdin");
+		expect(baseHook.hooks[0].command).toContain("overstory log tool-start");
+		expect(baseHook.hooks[0].command).toContain("stdin-agent");
+		expect(baseHook.hooks[0].command).toContain('read -r INPUT; echo "$INPUT" |');
+	});
+
+	test("PostToolUse hook pipes stdin to overstory log with --stdin flag", async () => {
+		const worktreePath = join(tempDir, "worktree");
+
+		await deployHooks(worktreePath, "stdin-agent");
+
+		const outputPath = join(worktreePath, ".claude", "settings.local.json");
+		const content = await Bun.file(outputPath).text();
+		const parsed = JSON.parse(content);
+		const postToolUse = parsed.hooks.PostToolUse[0];
+		expect(postToolUse.hooks[0].command).toContain("--stdin");
+		expect(postToolUse.hooks[0].command).toContain("overstory log tool-end");
+		expect(postToolUse.hooks[0].command).toContain("stdin-agent");
+		expect(postToolUse.hooks[0].command).toContain('read -r INPUT; echo "$INPUT" |');
+	});
+
+	test("Stop hook pipes stdin to overstory log with --stdin flag", async () => {
+		const worktreePath = join(tempDir, "worktree");
+
+		await deployHooks(worktreePath, "stdin-agent");
+
+		const outputPath = join(worktreePath, ".claude", "settings.local.json");
+		const content = await Bun.file(outputPath).text();
+		const parsed = JSON.parse(content);
+		const stop = parsed.hooks.Stop[0];
+		expect(stop.hooks[0].command).toContain("--stdin");
+		expect(stop.hooks[0].command).toContain("overstory log session-end");
+		expect(stop.hooks[0].command).toContain("stdin-agent");
+		expect(stop.hooks[0].command).toContain('read -r INPUT; echo "$INPUT" |');
+	});
+
+	test("hook commands no longer use sed-based extraction", async () => {
+		const worktreePath = join(tempDir, "worktree");
+
+		await deployHooks(worktreePath, "no-sed-agent");
+
+		const outputPath = join(worktreePath, ".claude", "settings.local.json");
+		const content = await Bun.file(outputPath).text();
+		const parsed = JSON.parse(content);
+
+		// PreToolUse base hook should not contain sed or --tool-name
+		const preToolUse = parsed.hooks.PreToolUse;
+		const basePreHook = preToolUse.find((h: { matcher: string }) => h.matcher === "");
+		expect(basePreHook.hooks[0].command).not.toContain("--tool-name");
+		expect(basePreHook.hooks[0].command).not.toContain("TOOL_NAME=$(");
+
+		// PostToolUse should not contain sed or --tool-name
+		const postToolUse = parsed.hooks.PostToolUse[0];
+		expect(postToolUse.hooks[0].command).not.toContain("--tool-name");
+		expect(postToolUse.hooks[0].command).not.toContain("TOOL_NAME=$(");
+	});
+
 	test("creates .claude directory even if worktree already exists", async () => {
 		const worktreePath = join(tempDir, "existing-worktree");
 		const { mkdir } = await import("node:fs/promises");
@@ -276,7 +350,7 @@ describe("deployHooks", () => {
 		}
 	});
 
-	test("scout capability adds Write/Edit/NotebookEdit and Bash file guards", async () => {
+	test("scout capability adds path boundary + block guards for Write/Edit/NotebookEdit and Bash file guards", async () => {
 		const worktreePath = join(tempDir, "scout-wt");
 
 		await deployHooks(worktreePath, "scout-agent", "scout");
@@ -286,18 +360,24 @@ describe("deployHooks", () => {
 		const parsed = JSON.parse(content);
 		const preToolUse = parsed.hooks.PreToolUse;
 
-		// Guards appear before the base logging hook
-		const writeGuard = preToolUse.find((h: { matcher: string }) => h.matcher === "Write");
-		const editGuard = preToolUse.find((h: { matcher: string }) => h.matcher === "Edit");
-		const notebookGuard = preToolUse.find((h: { matcher: string }) => h.matcher === "NotebookEdit");
+		// Scout gets both path boundary guards AND block guards for Write/Edit/NotebookEdit
+		const writeGuards = preToolUse.filter((h: { matcher: string }) => h.matcher === "Write");
+		const editGuards = preToolUse.filter((h: { matcher: string }) => h.matcher === "Edit");
+		const notebookGuards = preToolUse.filter(
+			(h: { matcher: string }) => h.matcher === "NotebookEdit",
+		);
 
-		expect(writeGuard).toBeDefined();
-		expect(editGuard).toBeDefined();
-		expect(notebookGuard).toBeDefined();
+		// 2 each: path boundary + capability block
+		expect(writeGuards.length).toBe(2);
+		expect(editGuards.length).toBe(2);
+		expect(notebookGuards.length).toBe(2);
 
-		// Verify write guard produces a block decision
-		expect(writeGuard.hooks[0].command).toContain('"decision":"block"');
-		expect(writeGuard.hooks[0].command).toContain("cannot modify files");
+		// Find the capability block guard (contains "cannot modify files")
+		const writeBlockGuard = writeGuards.find((h: { hooks: Array<{ command: string }> }) =>
+			h.hooks[0]?.command?.includes("cannot modify files"),
+		);
+		expect(writeBlockGuard).toBeDefined();
+		expect(writeBlockGuard.hooks[0].command).toContain('"decision":"block"');
 
 		// Should have multiple Bash guards: danger guard + file guard
 		const bashGuards = preToolUse.filter((h: { matcher: string }) => h.matcher === "Bash");
@@ -348,7 +428,7 @@ describe("deployHooks", () => {
 		expect(bashGuards.length).toBe(2);
 	});
 
-	test("builder capability gets Bash danger guards and native team tool blocks", async () => {
+	test("builder capability gets path boundary + Bash danger + Bash path boundary guards + native team tool blocks", async () => {
 		const worktreePath = join(tempDir, "builder-wt");
 
 		await deployHooks(worktreePath, "builder-agent", "builder");
@@ -362,14 +442,36 @@ describe("deployHooks", () => {
 			.filter((h: { matcher: string }) => h.matcher !== "")
 			.map((h: { matcher: string }) => h.matcher);
 
-		// Bash danger guard + 10 native team tool blocks
+		// Path boundary guards + Bash danger guard + Bash path boundary guard + 10 native team tool blocks
 		expect(guardMatchers).toContain("Bash");
 		expect(guardMatchers).toContain("Task");
 		expect(guardMatchers).toContain("TeamCreate");
-		expect(guardMatchers).not.toContain("Write");
+		// Builder has Write guards for path boundary (not block guards)
+		expect(guardMatchers).toContain("Write");
+		const writeGuards = preToolUse.filter(
+			(h: { matcher: string; hooks: Array<{ command: string }> }) => h.matcher === "Write",
+		);
+		// Path boundary guard, not a full block
+		expect(writeGuards[0].hooks[0].command).toContain("OVERSTORY_WORKTREE_PATH");
+		expect(writeGuards[0].hooks[0].command).not.toContain("cannot modify files");
+
+		// Builder should have 2 Bash guards: danger guard + path boundary guard
+		const bashGuards = preToolUse.filter((h: { matcher: string }) => h.matcher === "Bash");
+		expect(bashGuards.length).toBe(2);
+		// One should be the danger guard (checks git push)
+		const dangerGuard = bashGuards.find(
+			(h: { hooks: Array<{ command: string }> }) =>
+				h.hooks[0]?.command?.includes("git") && h.hooks[0]?.command?.includes("push"),
+		);
+		expect(dangerGuard).toBeDefined();
+		// One should be the path boundary guard
+		const pathBoundaryGuard = bashGuards.find((h: { hooks: Array<{ command: string }> }) =>
+			h.hooks[0]?.command?.includes("Bash path boundary violation"),
+		);
+		expect(pathBoundaryGuard).toBeDefined();
 	});
 
-	test("merger capability gets Bash danger guards and native team tool blocks", async () => {
+	test("merger capability gets path boundary + Bash danger guards + native team tool blocks", async () => {
 		const worktreePath = join(tempDir, "merger-wt");
 
 		await deployHooks(worktreePath, "merger-agent", "merger");
@@ -385,10 +487,11 @@ describe("deployHooks", () => {
 
 		expect(guardMatchers).toContain("Bash");
 		expect(guardMatchers).toContain("Task");
-		expect(guardMatchers).not.toContain("Write");
+		// Merger has Write path boundary guards
+		expect(guardMatchers).toContain("Write");
 	});
 
-	test("default capability (no arg) gets Bash danger guards and native team tool blocks", async () => {
+	test("default capability (no arg) gets path boundary + Bash danger guards + native team tool blocks", async () => {
 		const worktreePath = join(tempDir, "default-wt");
 
 		await deployHooks(worktreePath, "default-agent");
@@ -404,7 +507,8 @@ describe("deployHooks", () => {
 
 		expect(guardMatchers).toContain("Bash");
 		expect(guardMatchers).toContain("Task");
-		expect(guardMatchers).not.toContain("Write");
+		// Default (builder) has Write path boundary guards
+		expect(guardMatchers).toContain("Write");
 	});
 
 	test("guards are prepended before base logging hook", async () => {
@@ -444,19 +548,35 @@ describe("getCapabilityGuards", () => {
 		expect(guards.length).toBe(NATIVE_TEAM_TOOL_COUNT + 4);
 	});
 
-	test("returns 10 guards for builder (10 team tool blocks only)", () => {
+	test("returns 11 guards for builder (10 team + 1 bash path boundary)", () => {
 		const guards = getCapabilityGuards("builder");
-		expect(guards.length).toBe(NATIVE_TEAM_TOOL_COUNT);
+		expect(guards.length).toBe(NATIVE_TEAM_TOOL_COUNT + 1);
 	});
 
-	test("returns 10 guards for merger (10 team tool blocks only)", () => {
+	test("returns 11 guards for merger (10 team + 1 bash path boundary)", () => {
 		const guards = getCapabilityGuards("merger");
-		expect(guards.length).toBe(NATIVE_TEAM_TOOL_COUNT);
+		expect(guards.length).toBe(NATIVE_TEAM_TOOL_COUNT + 1);
 	});
 
 	test("returns 10 guards for unknown capability (10 team tool blocks only)", () => {
 		const guards = getCapabilityGuards("unknown");
 		expect(guards.length).toBe(NATIVE_TEAM_TOOL_COUNT);
+	});
+
+	test("builder gets Bash path boundary guard", () => {
+		const guards = getCapabilityGuards("builder");
+		const bashGuard = guards.find((g) => g.matcher === "Bash");
+		expect(bashGuard).toBeDefined();
+		expect(bashGuard?.hooks[0]?.command).toContain("OVERSTORY_WORKTREE_PATH");
+		expect(bashGuard?.hooks[0]?.command).toContain("Bash path boundary violation");
+	});
+
+	test("merger gets Bash path boundary guard", () => {
+		const guards = getCapabilityGuards("merger");
+		const bashGuard = guards.find((g) => g.matcher === "Bash");
+		expect(bashGuard).toBeDefined();
+		expect(bashGuard?.hooks[0]?.command).toContain("OVERSTORY_WORKTREE_PATH");
+		expect(bashGuard?.hooks[0]?.command).toContain("Bash path boundary violation");
 	});
 
 	test("scout guards include Write, Edit, NotebookEdit, and Bash matchers", () => {
@@ -647,7 +767,7 @@ describe("getDangerGuards", () => {
 		}
 	});
 
-	test("danger guards appear before capability guards in scout", async () => {
+	test("guard ordering: path boundary → danger → capability in scout", async () => {
 		const tempDir = await import("node:fs/promises").then((fs) =>
 			fs.mkdtemp(join(require("node:os").tmpdir(), "overstory-order-test-")),
 		);
@@ -661,11 +781,20 @@ describe("getDangerGuards", () => {
 			const parsed = JSON.parse(content);
 			const preToolUse = parsed.hooks.PreToolUse;
 
-			const firstBashIdx = preToolUse.findIndex((h: { matcher: string }) => h.matcher === "Bash");
-			const writeIdx = preToolUse.findIndex((h: { matcher: string }) => h.matcher === "Write");
+			// Path boundary Write guard (first) should come before Bash danger guard
+			const pathBoundaryWriteIdx = preToolUse.findIndex(
+				(h: { matcher: string; hooks: Array<{ command: string }> }) =>
+					h.matcher === "Write" && h.hooks[0]?.command?.includes("OVERSTORY_WORKTREE_PATH"),
+			);
+			const bashDangerIdx = preToolUse.findIndex((h: { matcher: string }) => h.matcher === "Bash");
+			// Capability block Write guard should come after Bash danger guard
+			const writeBlockIdx = preToolUse.findIndex(
+				(h: { matcher: string; hooks: Array<{ command: string }> }) =>
+					h.matcher === "Write" && h.hooks[0]?.command?.includes("cannot modify files"),
+			);
 
-			// Bash danger guard should come before Write capability guard
-			expect(firstBashIdx).toBeLessThan(writeIdx);
+			expect(pathBoundaryWriteIdx).toBeLessThan(bashDangerIdx);
+			expect(bashDangerIdx).toBeLessThan(writeBlockIdx);
 		} finally {
 			await import("node:fs/promises").then((fs) =>
 				fs.rm(tempDir, { recursive: true, force: true }),
@@ -1033,5 +1162,451 @@ describe("structural enforcement integration", () => {
 			expect(taskGuard).toBeDefined();
 			expect(taskGuard.hooks[0].command).toContain("overstory sling");
 		}
+	});
+
+	test("all capabilities get path boundary guards in deployed hooks", async () => {
+		const capabilities = [
+			"scout",
+			"reviewer",
+			"lead",
+			"builder",
+			"merger",
+			"coordinator",
+			"supervisor",
+		];
+
+		for (const cap of capabilities) {
+			const wt = join(tempDir, `${cap}-path-wt`);
+			await deployHooks(wt, `${cap}-agent`, cap);
+
+			const content = await Bun.file(join(wt, ".claude", "settings.local.json")).text();
+			const parsed = JSON.parse(content);
+			const preToolUse = parsed.hooks.PreToolUse;
+
+			// Path boundary guards should be present for Write, Edit, NotebookEdit
+			// They use OVERSTORY_WORKTREE_PATH env var
+			const writeGuards = preToolUse.filter(
+				(h: { matcher: string; hooks: Array<{ command: string }> }) =>
+					h.matcher === "Write" && h.hooks[0]?.command?.includes("OVERSTORY_WORKTREE_PATH"),
+			);
+			const editGuards = preToolUse.filter(
+				(h: { matcher: string; hooks: Array<{ command: string }> }) =>
+					h.matcher === "Edit" && h.hooks[0]?.command?.includes("OVERSTORY_WORKTREE_PATH"),
+			);
+			const notebookGuards = preToolUse.filter(
+				(h: { matcher: string; hooks: Array<{ command: string }> }) =>
+					h.matcher === "NotebookEdit" && h.hooks[0]?.command?.includes("OVERSTORY_WORKTREE_PATH"),
+			);
+
+			expect(writeGuards.length).toBeGreaterThanOrEqual(1);
+			expect(editGuards.length).toBeGreaterThanOrEqual(1);
+			expect(notebookGuards.length).toBeGreaterThanOrEqual(1);
+		}
+	});
+
+	test("path boundary guards appear before danger guards in deployed hooks", async () => {
+		const worktreePath = join(tempDir, "order-path-wt");
+
+		await deployHooks(worktreePath, "order-path-agent", "builder");
+
+		const outputPath = join(worktreePath, ".claude", "settings.local.json");
+		const content = await Bun.file(outputPath).text();
+		const parsed = JSON.parse(content);
+		const preToolUse = parsed.hooks.PreToolUse;
+
+		// Path boundary Write guard should come before Bash danger guard
+		const pathWriteIdx = preToolUse.findIndex(
+			(h: { matcher: string; hooks: Array<{ command: string }> }) =>
+				h.matcher === "Write" && h.hooks[0]?.command?.includes("OVERSTORY_WORKTREE_PATH"),
+		);
+		const bashDangerIdx = preToolUse.findIndex(
+			(h: { matcher: string; hooks: Array<{ command: string }> }) =>
+				h.matcher === "Bash" && h.hooks[0]?.command?.includes("git"),
+		);
+
+		expect(pathWriteIdx).toBeGreaterThanOrEqual(0);
+		expect(bashDangerIdx).toBeGreaterThanOrEqual(0);
+		expect(pathWriteIdx).toBeLessThan(bashDangerIdx);
+	});
+});
+
+describe("buildPathBoundaryGuardScript", () => {
+	test("returns a string containing env var guard", () => {
+		const script = buildPathBoundaryGuardScript("file_path");
+		expect(script).toContain('[ -z "$OVERSTORY_AGENT_NAME" ] && exit 0;');
+	});
+
+	test("returns a string checking OVERSTORY_WORKTREE_PATH", () => {
+		const script = buildPathBoundaryGuardScript("file_path");
+		expect(script).toContain('[ -z "$OVERSTORY_WORKTREE_PATH" ] && exit 0;');
+	});
+
+	test("reads stdin input", () => {
+		const script = buildPathBoundaryGuardScript("file_path");
+		expect(script).toContain("read -r INPUT");
+	});
+
+	test("extracts the specified field name from JSON", () => {
+		const script = buildPathBoundaryGuardScript("file_path");
+		expect(script).toContain('"file_path"');
+
+		const notebookScript = buildPathBoundaryGuardScript("notebook_path");
+		expect(notebookScript).toContain('"notebook_path"');
+	});
+
+	test("resolves relative paths against cwd", () => {
+		const script = buildPathBoundaryGuardScript("file_path");
+		expect(script).toContain("$(pwd)");
+	});
+
+	test("allows paths inside the worktree", () => {
+		const script = buildPathBoundaryGuardScript("file_path");
+		expect(script).toContain('"$OVERSTORY_WORKTREE_PATH"/*) exit 0');
+	});
+
+	test("blocks paths outside the worktree with decision:block", () => {
+		const script = buildPathBoundaryGuardScript("file_path");
+		expect(script).toContain('"decision":"block"');
+		expect(script).toContain("Path boundary violation");
+	});
+
+	test("fails open when path field is empty", () => {
+		const script = buildPathBoundaryGuardScript("file_path");
+		expect(script).toContain('[ -z "$FILE_PATH" ] && exit 0;');
+	});
+});
+
+describe("getPathBoundaryGuards", () => {
+	test("returns exactly 3 guards (Write, Edit, NotebookEdit)", () => {
+		const guards = getPathBoundaryGuards();
+		expect(guards).toHaveLength(3);
+	});
+
+	test("guards match Write, Edit, and NotebookEdit tools", () => {
+		const guards = getPathBoundaryGuards();
+		const matchers = guards.map((g) => g.matcher);
+		expect(matchers).toContain("Write");
+		expect(matchers).toContain("Edit");
+		expect(matchers).toContain("NotebookEdit");
+	});
+
+	test("Write and Edit guards extract file_path field", () => {
+		const guards = getPathBoundaryGuards();
+		const writeGuard = guards.find((g) => g.matcher === "Write");
+		const editGuard = guards.find((g) => g.matcher === "Edit");
+		expect(writeGuard?.hooks[0]?.command).toContain('"file_path"');
+		expect(editGuard?.hooks[0]?.command).toContain('"file_path"');
+	});
+
+	test("NotebookEdit guard extracts notebook_path field", () => {
+		const guards = getPathBoundaryGuards();
+		const notebookGuard = guards.find((g) => g.matcher === "NotebookEdit");
+		expect(notebookGuard?.hooks[0]?.command).toContain('"notebook_path"');
+	});
+
+	test("all guards include OVERSTORY_WORKTREE_PATH check", () => {
+		const guards = getPathBoundaryGuards();
+		for (const guard of guards) {
+			expect(guard.hooks[0]?.command).toContain("OVERSTORY_WORKTREE_PATH");
+		}
+	});
+
+	test("all guards have command type hooks", () => {
+		const guards = getPathBoundaryGuards();
+		for (const guard of guards) {
+			expect(guard.hooks[0]?.type).toBe("command");
+		}
+	});
+});
+
+describe("buildBashPathBoundaryScript", () => {
+	test("returns a string containing env var guard", () => {
+		const script = buildBashPathBoundaryScript();
+		expect(script).toContain('[ -z "$OVERSTORY_AGENT_NAME" ] && exit 0;');
+	});
+
+	test("checks OVERSTORY_WORKTREE_PATH env var", () => {
+		const script = buildBashPathBoundaryScript();
+		expect(script).toContain('[ -z "$OVERSTORY_WORKTREE_PATH" ] && exit 0;');
+	});
+
+	test("reads stdin input", () => {
+		const script = buildBashPathBoundaryScript();
+		expect(script).toContain("read -r INPUT");
+	});
+
+	test("extracts command from JSON input", () => {
+		const script = buildBashPathBoundaryScript();
+		expect(script).toContain("CMD=$(");
+		expect(script).toContain('"command"');
+	});
+
+	test("checks for file-modifying patterns before path extraction", () => {
+		const script = buildBashPathBoundaryScript();
+		// Should check for file-modifying patterns first
+		expect(script).toContain("grep -qE");
+		expect(script).toContain("sed\\s+-i");
+		expect(script).toContain("\\bmv\\s");
+		expect(script).toContain("\\bcp\\s");
+		expect(script).toContain("\\brm\\s");
+		expect(script).toContain("tee\\s");
+		expect(script).toContain("\\brsync\\s");
+		expect(script).toContain("\\binstall\\s");
+	});
+
+	test("includes common file-modifying patterns", () => {
+		const script = buildBashPathBoundaryScript();
+		expect(script).toContain("sed\\s+-i");
+		expect(script).toContain("sed\\s+--in-place");
+		expect(script).toContain("echo\\s+.*>");
+		expect(script).toContain("printf\\s+.*>");
+		expect(script).toContain("cat\\s+.*>");
+		expect(script).toContain("tee\\s");
+		expect(script).toContain("\\bmv\\s");
+		expect(script).toContain("\\bcp\\s");
+		expect(script).toContain("\\brm\\s");
+		expect(script).toContain("\\bmkdir\\s");
+		expect(script).toContain("\\btouch\\s");
+		expect(script).toContain("\\bchmod\\s");
+		expect(script).toContain("\\bchown\\s");
+		expect(script).toContain(">>");
+		expect(script).toContain("\\binstall\\s");
+		expect(script).toContain("\\brsync\\s");
+	});
+
+	test("passes through non-file-modifying commands", () => {
+		const script = buildBashPathBoundaryScript();
+		// Non-modifying commands should hit the early exit
+		expect(script).toContain("exit 0; fi;");
+	});
+
+	test("extracts absolute paths from command", () => {
+		const script = buildBashPathBoundaryScript();
+		// Should extract tokens starting with /
+		expect(script).toContain("grep '^/'");
+	});
+
+	test("allows commands with no absolute paths (relative paths OK)", () => {
+		const script = buildBashPathBoundaryScript();
+		expect(script).toContain('[ -z "$PATHS" ] && exit 0;');
+	});
+
+	test("validates paths against worktree boundary", () => {
+		const script = buildBashPathBoundaryScript();
+		expect(script).toContain('"$OVERSTORY_WORKTREE_PATH"/*');
+		expect(script).toContain('"$OVERSTORY_WORKTREE_PATH")');
+	});
+
+	test("allows /dev/* paths as safe exceptions", () => {
+		const script = buildBashPathBoundaryScript();
+		expect(script).toContain("/dev/*");
+	});
+
+	test("allows /tmp/* paths as safe exceptions", () => {
+		const script = buildBashPathBoundaryScript();
+		expect(script).toContain("/tmp/*");
+	});
+
+	test("blocks paths outside worktree with decision:block", () => {
+		const script = buildBashPathBoundaryScript();
+		expect(script).toContain('"decision":"block"');
+		expect(script).toContain("Bash path boundary violation");
+		expect(script).toContain("outside your worktree");
+	});
+
+	test("iterates over extracted paths with while loop", () => {
+		const script = buildBashPathBoundaryScript();
+		expect(script).toContain("while IFS= read -r P; do");
+		expect(script).toContain("done;");
+	});
+
+	test("strips trailing quotes and semicolons from extracted paths", () => {
+		const script = buildBashPathBoundaryScript();
+		// sed should strip trailing junk from path tokens
+		expect(script).toContain("sed 's/[\";>]*$//'");
+	});
+});
+
+describe("getBashPathBoundaryGuards", () => {
+	test("returns exactly 1 Bash guard entry", () => {
+		const guards = getBashPathBoundaryGuards();
+		expect(guards).toHaveLength(1);
+		expect(guards[0]?.matcher).toBe("Bash");
+	});
+
+	test("guard hook type is command", () => {
+		const guards = getBashPathBoundaryGuards();
+		expect(guards[0]?.hooks[0]?.type).toBe("command");
+	});
+
+	test("guard command checks OVERSTORY_WORKTREE_PATH", () => {
+		const guards = getBashPathBoundaryGuards();
+		const command = guards[0]?.hooks[0]?.command ?? "";
+		expect(command).toContain("OVERSTORY_WORKTREE_PATH");
+	});
+
+	test("guard command includes env var guard prefix", () => {
+		const guards = getBashPathBoundaryGuards();
+		const command = guards[0]?.hooks[0]?.command ?? "";
+		expect(command).toContain('[ -z "$OVERSTORY_AGENT_NAME" ] && exit 0;');
+	});
+
+	test("guard blocks paths outside worktree", () => {
+		const guards = getBashPathBoundaryGuards();
+		const command = guards[0]?.hooks[0]?.command ?? "";
+		expect(command).toContain("Bash path boundary violation");
+	});
+});
+
+describe("bash path boundary integration", () => {
+	let tempDir: string;
+
+	beforeEach(async () => {
+		tempDir = await mkdtemp(join(tmpdir(), "overstory-bash-path-test-"));
+	});
+
+	afterEach(async () => {
+		await rm(tempDir, { recursive: true, force: true });
+	});
+
+	test("builder gets Bash path boundary guard in deployed hooks", async () => {
+		const worktreePath = join(tempDir, "builder-bp-wt");
+
+		await deployHooks(worktreePath, "builder-bp", "builder");
+
+		const outputPath = join(worktreePath, ".claude", "settings.local.json");
+		const content = await Bun.file(outputPath).text();
+		const parsed = JSON.parse(content);
+		const preToolUse = parsed.hooks.PreToolUse;
+
+		const bashGuards = preToolUse.filter((h: { matcher: string }) => h.matcher === "Bash");
+		// Should have 2 Bash guards: danger guard + path boundary guard
+		expect(bashGuards.length).toBe(2);
+
+		// Find the path boundary guard
+		const pathGuard = bashGuards.find((h: { hooks: Array<{ command: string }> }) =>
+			h.hooks[0]?.command?.includes("Bash path boundary violation"),
+		);
+		expect(pathGuard).toBeDefined();
+		expect(pathGuard.hooks[0].command).toContain("OVERSTORY_WORKTREE_PATH");
+	});
+
+	test("merger gets Bash path boundary guard in deployed hooks", async () => {
+		const worktreePath = join(tempDir, "merger-bp-wt");
+
+		await deployHooks(worktreePath, "merger-bp", "merger");
+
+		const outputPath = join(worktreePath, ".claude", "settings.local.json");
+		const content = await Bun.file(outputPath).text();
+		const parsed = JSON.parse(content);
+		const preToolUse = parsed.hooks.PreToolUse;
+
+		const bashGuards = preToolUse.filter((h: { matcher: string }) => h.matcher === "Bash");
+		expect(bashGuards.length).toBe(2);
+
+		const pathGuard = bashGuards.find((h: { hooks: Array<{ command: string }> }) =>
+			h.hooks[0]?.command?.includes("Bash path boundary violation"),
+		);
+		expect(pathGuard).toBeDefined();
+	});
+
+	test("scout does NOT get Bash path boundary guard", async () => {
+		const worktreePath = join(tempDir, "scout-bp-wt");
+
+		await deployHooks(worktreePath, "scout-bp", "scout");
+
+		const outputPath = join(worktreePath, ".claude", "settings.local.json");
+		const content = await Bun.file(outputPath).text();
+		const parsed = JSON.parse(content);
+		const preToolUse = parsed.hooks.PreToolUse;
+
+		// Scout gets danger guard + file guard (2 Bash guards), but NOT path boundary
+		const bashGuards = preToolUse.filter((h: { matcher: string }) => h.matcher === "Bash");
+		expect(bashGuards.length).toBe(2);
+
+		const pathGuard = bashGuards.find((h: { hooks: Array<{ command: string }> }) =>
+			h.hooks[0]?.command?.includes("Bash path boundary violation"),
+		);
+		expect(pathGuard).toBeUndefined();
+	});
+
+	test("reviewer does NOT get Bash path boundary guard", async () => {
+		const worktreePath = join(tempDir, "reviewer-bp-wt");
+
+		await deployHooks(worktreePath, "reviewer-bp", "reviewer");
+
+		const outputPath = join(worktreePath, ".claude", "settings.local.json");
+		const content = await Bun.file(outputPath).text();
+		const parsed = JSON.parse(content);
+		const preToolUse = parsed.hooks.PreToolUse;
+
+		const pathGuard = preToolUse.find(
+			(h: { matcher: string; hooks: Array<{ command: string }> }) =>
+				h.matcher === "Bash" && h.hooks[0]?.command?.includes("Bash path boundary violation"),
+		);
+		expect(pathGuard).toBeUndefined();
+	});
+
+	test("lead does NOT get Bash path boundary guard", async () => {
+		const worktreePath = join(tempDir, "lead-bp-wt");
+
+		await deployHooks(worktreePath, "lead-bp", "lead");
+
+		const outputPath = join(worktreePath, ".claude", "settings.local.json");
+		const content = await Bun.file(outputPath).text();
+		const parsed = JSON.parse(content);
+		const preToolUse = parsed.hooks.PreToolUse;
+
+		const pathGuard = preToolUse.find(
+			(h: { matcher: string; hooks: Array<{ command: string }> }) =>
+				h.matcher === "Bash" && h.hooks[0]?.command?.includes("Bash path boundary violation"),
+		);
+		expect(pathGuard).toBeUndefined();
+	});
+
+	test("Bash path boundary guard appears after danger guard in builder", async () => {
+		const worktreePath = join(tempDir, "builder-order-wt");
+
+		await deployHooks(worktreePath, "builder-order", "builder");
+
+		const outputPath = join(worktreePath, ".claude", "settings.local.json");
+		const content = await Bun.file(outputPath).text();
+		const parsed = JSON.parse(content);
+		const preToolUse = parsed.hooks.PreToolUse;
+
+		const dangerIdx = preToolUse.findIndex(
+			(h: { matcher: string; hooks: Array<{ command: string }> }) =>
+				h.matcher === "Bash" &&
+				h.hooks[0]?.command?.includes("git") &&
+				h.hooks[0]?.command?.includes("push"),
+		);
+		const pathBoundaryIdx = preToolUse.findIndex(
+			(h: { matcher: string; hooks: Array<{ command: string }> }) =>
+				h.matcher === "Bash" && h.hooks[0]?.command?.includes("Bash path boundary violation"),
+		);
+
+		expect(dangerIdx).toBeGreaterThanOrEqual(0);
+		expect(pathBoundaryIdx).toBeGreaterThanOrEqual(0);
+		// Danger guard comes from getDangerGuards, path boundary from getCapabilityGuards
+		// In deployHooks: allGuards = [...pathGuards, ...dangerGuards, ...capabilityGuards]
+		// So danger guard comes before path boundary guard
+		expect(dangerIdx).toBeLessThan(pathBoundaryIdx);
+	});
+
+	test("default capability (builder) gets Bash path boundary guard", async () => {
+		const worktreePath = join(tempDir, "default-bp-wt");
+
+		await deployHooks(worktreePath, "default-bp");
+
+		const outputPath = join(worktreePath, ".claude", "settings.local.json");
+		const content = await Bun.file(outputPath).text();
+		const parsed = JSON.parse(content);
+		const preToolUse = parsed.hooks.PreToolUse;
+
+		const pathGuard = preToolUse.find(
+			(h: { matcher: string; hooks: Array<{ command: string }> }) =>
+				h.matcher === "Bash" && h.hooks[0]?.command?.includes("Bash path boundary violation"),
+		);
+		expect(pathGuard).toBeDefined();
 	});
 });

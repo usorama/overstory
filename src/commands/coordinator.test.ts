@@ -128,6 +128,7 @@ function makeCoordinatorSession(overrides: Partial<AgentSession> = {}): AgentSes
 		pid: 99999,
 		parentAgent: null,
 		depth: 0,
+		runId: null,
 		startedAt: new Date().toISOString(),
 		lastActivity: new Date().toISOString(),
 		escalationLevel: 0,

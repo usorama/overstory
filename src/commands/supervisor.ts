@@ -254,6 +254,7 @@ async function startSupervisor(args: string[]): Promise<void> {
 		pid,
 		parentAgent: flags.parent,
 		depth: flags.depth,
+		runId: null,
 		startedAt: new Date().toISOString(),
 		lastActivity: new Date().toISOString(),
 		escalationLevel: 0,

@@ -43,6 +43,7 @@ function makeSession(overrides: Partial<AgentSession> = {}): AgentSession {
 		pid: 12345,
 		parentAgent: "coordinator",
 		depth: 1,
+		runId: null,
 		startedAt: new Date().toISOString(),
 		lastActivity: new Date().toISOString(),
 		escalationLevel: 0,

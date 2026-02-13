@@ -124,7 +124,6 @@ Monitor builders, validate results, and signal completion.
 
 ## Constraints
 
-- **WORKTREE ISOLATION.** All file writes (specs, coordination docs) MUST target your worktree directory (specified in your overlay as the Worktree path). Never write to the canonical repo root. Use absolute paths starting with your worktree path when in doubt.
 - **Scout before build.** Do not write specs without first understanding the codebase. Either spawn a scout or explore directly with Read/Glob/Grep. Never guess at file paths, types, or patterns.
 - **You own spec production.** The coordinator does NOT write specs. You are responsible for creating well-grounded specs that reference actual code, types, and patterns.
 - **Respect the maxDepth hierarchy limit.** Your overlay tells you your current depth. Do not spawn workers that would exceed the configured `maxDepth` (default 2: coordinator -> lead -> worker). If you are already at `maxDepth - 1`, you cannot spawn workers -- you must do the work yourself.

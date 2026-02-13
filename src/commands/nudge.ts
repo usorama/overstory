@@ -75,6 +75,55 @@ async function loadSessions(projectRoot: string): Promise<AgentSession[]> {
 }
 
 /**
+ * Load the orchestrator's registered tmux session name.
+ *
+ * Written by `overstory prime` at SessionStart when the orchestrator
+ * is running inside tmux. Enables agents to nudge the orchestrator
+ * even though it's not tracked in sessions.json.
+ */
+async function loadOrchestratorTmuxSession(projectRoot: string): Promise<string | null> {
+	const regPath = join(projectRoot, ".overstory", "orchestrator-tmux.json");
+	const file = Bun.file(regPath);
+	if (!(await file.exists())) {
+		return null;
+	}
+	try {
+		const text = await file.text();
+		const reg = JSON.parse(text) as { tmuxSession?: string };
+		return reg.tmuxSession ?? null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Resolve the tmux session name for an agent.
+ *
+ * For regular agents, looks up sessions.json.
+ * For "orchestrator", falls back to the orchestrator-tmux.json registration
+ * file written by `overstory prime`.
+ */
+async function resolveTargetSession(
+	projectRoot: string,
+	agentName: string,
+): Promise<string | null> {
+	const sessions = await loadSessions(projectRoot);
+	const session = sessions.find(
+		(s) => s.agentName === agentName && s.state !== "zombie" && s.state !== "completed",
+	);
+	if (session) {
+		return session.tmuxSession;
+	}
+
+	// Fallback for orchestrator: check orchestrator-tmux.json
+	if (agentName === "orchestrator") {
+		return await loadOrchestratorTmuxSession(projectRoot);
+	}
+
+	return null;
+}
+
+/**
  * Check debounce state for an agent. Returns true if a nudge was sent
  * within the debounce window and should be skipped.
  */
@@ -156,13 +205,10 @@ export async function nudgeAgent(
 	message: string = DEFAULT_MESSAGE,
 	force = false,
 ): Promise<{ delivered: boolean; reason?: string }> {
-	// Look up agent session
-	const sessions = await loadSessions(projectRoot);
-	const session = sessions.find(
-		(s) => s.agentName === agentName && s.state !== "zombie" && s.state !== "completed",
-	);
+	// Resolve tmux session (sessions.json for agents, orchestrator-tmux.json for orchestrator)
+	const tmuxSessionName = await resolveTargetSession(projectRoot, agentName);
 
-	if (!session) {
+	if (!tmuxSessionName) {
 		return { delivered: false, reason: `No active session for agent "${agentName}"` };
 	}
 
@@ -176,13 +222,13 @@ export async function nudgeAgent(
 	}
 
 	// Verify tmux session is alive
-	const alive = await isSessionAlive(session.tmuxSession);
+	const alive = await isSessionAlive(tmuxSessionName);
 	if (!alive) {
-		return { delivered: false, reason: `Tmux session "${session.tmuxSession}" is not alive` };
+		return { delivered: false, reason: `Tmux session "${tmuxSessionName}" is not alive` };
 	}
 
 	// Send with retry
-	const delivered = await sendNudgeWithRetry(session.tmuxSession, message);
+	const delivered = await sendNudgeWithRetry(tmuxSessionName, message);
 
 	if (delivered) {
 		// Record nudge for debounce tracking

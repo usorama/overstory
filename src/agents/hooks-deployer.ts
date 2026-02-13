@@ -144,6 +144,63 @@ function getTemplatePath(): string {
 const ENV_GUARD = '[ -z "$OVERSTORY_AGENT_NAME" ] && exit 0;';
 
 /**
+ * Build a PreToolUse guard script that validates file paths are within
+ * the agent's worktree boundary.
+ *
+ * Applied to Write, Edit, and NotebookEdit tools. Uses the
+ * OVERSTORY_WORKTREE_PATH env var set during tmux session creation
+ * to determine the allowed path boundary.
+ *
+ * @param filePathField - The JSON field name containing the file path
+ *   ("file_path" for Write/Edit, "notebook_path" for NotebookEdit)
+ */
+export function buildPathBoundaryGuardScript(filePathField: string): string {
+	const script = [
+		// Only enforce for overstory agent sessions
+		ENV_GUARD,
+		// Skip if worktree path is not set (e.g., orchestrator)
+		'[ -z "$OVERSTORY_WORKTREE_PATH" ] && exit 0;',
+		"read -r INPUT;",
+		// Extract file path from JSON (sed -n + p = empty if no match)
+		`FILE_PATH=$(echo "$INPUT" | sed -n 's/.*"${filePathField}": *"\\([^"]*\\)".*/\\1/p');`,
+		// No path extracted — fail open (tool may be called differently)
+		'[ -z "$FILE_PATH" ] && exit 0;',
+		// Resolve relative paths against cwd
+		'case "$FILE_PATH" in /*) ;; *) FILE_PATH="$(pwd)/$FILE_PATH" ;; esac;',
+		// Allow if path is inside the worktree (exact match or subpath)
+		'case "$FILE_PATH" in "$OVERSTORY_WORKTREE_PATH"/*) exit 0 ;; "$OVERSTORY_WORKTREE_PATH") exit 0 ;; esac;',
+		// Block: path is outside the worktree boundary
+		'echo \'{"decision":"block","reason":"Path boundary violation: file is outside your assigned worktree. All writes must target files within your worktree."}\';',
+	].join(" ");
+	return script;
+}
+
+/**
+ * Generate PreToolUse guards that enforce worktree path boundaries.
+ *
+ * Returns guards for Write (file_path), Edit (file_path), and
+ * NotebookEdit (notebook_path). Applied to ALL agent capabilities
+ * as defense-in-depth (non-implementation agents already have these
+ * tools blocked, but the path guard catches any bypass).
+ */
+export function getPathBoundaryGuards(): HookEntry[] {
+	return [
+		{
+			matcher: "Write",
+			hooks: [{ type: "command", command: buildPathBoundaryGuardScript("file_path") }],
+		},
+		{
+			matcher: "Edit",
+			hooks: [{ type: "command", command: buildPathBoundaryGuardScript("file_path") }],
+		},
+		{
+			matcher: "NotebookEdit",
+			hooks: [{ type: "command", command: buildPathBoundaryGuardScript("notebook_path") }],
+		},
+	];
+}
+
+/**
  * Build a PreToolUse guard that blocks a specific tool.
  *
  * Returns a JSON response with decision=block so Claude Code rejects
@@ -265,6 +322,103 @@ export function buildBashFileGuardScript(
 }
 
 /**
+ * Capabilities that are allowed to modify files via Bash commands.
+ * These get the Bash path boundary guard instead of a blanket file-modification block.
+ */
+const IMPLEMENTATION_CAPABILITIES = new Set(["builder", "merger"]);
+
+/**
+ * Bash patterns that modify files and require path boundary validation.
+ * Each entry is a regex fragment matched against the extracted command.
+ * When matched, all absolute paths in the command are checked against the worktree boundary.
+ */
+const FILE_MODIFYING_BASH_PATTERNS = [
+	"sed\\s+-i",
+	"sed\\s+--in-place",
+	"echo\\s+.*>",
+	"printf\\s+.*>",
+	"cat\\s+.*>",
+	"tee\\s",
+	"\\bmv\\s",
+	"\\bcp\\s",
+	"\\brm\\s",
+	"\\bmkdir\\s",
+	"\\btouch\\s",
+	"\\bchmod\\s",
+	"\\bchown\\s",
+	">>",
+	"\\binstall\\s",
+	"\\brsync\\s",
+];
+
+/**
+ * Build a Bash PreToolUse guard script that validates file-modifying commands
+ * keep their target paths within the agent's worktree boundary.
+ *
+ * Applied to builder/merger agents. For file-modifying Bash commands (sed -i,
+ * echo >, cp, mv, tee, install, rsync, etc.), extracts all absolute paths
+ * from the command and verifies they resolve within the worktree.
+ *
+ * Limitations (documented by design):
+ * - Cannot detect paths constructed via variable expansion ($VAR/file)
+ * - Cannot detect paths reached via cd + relative path
+ * - Cannot detect paths inside subshells or backtick evaluation
+ * - Relative paths are assumed safe (tmux cwd IS the worktree)
+ *
+ * Uses OVERSTORY_WORKTREE_PATH env var set during tmux session creation.
+ */
+export function buildBashPathBoundaryScript(): string {
+	const fileModifyPattern = FILE_MODIFYING_BASH_PATTERNS.join("|");
+
+	const script = [
+		// Only enforce for overstory agent sessions
+		ENV_GUARD,
+		// Skip if worktree path is not set (e.g., orchestrator)
+		'[ -z "$OVERSTORY_WORKTREE_PATH" ] && exit 0;',
+		"read -r INPUT;",
+		// Extract command value from JSON (with optional space after colon)
+		'CMD=$(echo "$INPUT" | sed \'s/.*"command": *"\\([^"]*\\)".*/\\1/\');',
+		// Only check file-modifying commands — non-modifying commands pass through
+		`if ! echo "$CMD" | grep -qE '${fileModifyPattern}'; then exit 0; fi;`,
+		// Extract all absolute paths (tokens starting with /) from the command.
+		// Uses tr to split on whitespace, grep to find /paths, sed to strip trailing quotes/semicolons.
+		"PATHS=$(echo \"$CMD\" | tr ' \\t' '\\n\\n' | grep '^/' | sed 's/[\";>]*$//');",
+		// If no absolute paths found, allow (relative paths resolve from worktree cwd)
+		'[ -z "$PATHS" ] && exit 0;',
+		// Check each absolute path against the worktree boundary
+		'echo "$PATHS" | while IFS= read -r P; do',
+		'  case "$P" in',
+		'    "$OVERSTORY_WORKTREE_PATH"/*) ;;',
+		'    "$OVERSTORY_WORKTREE_PATH") ;;',
+		"    /dev/*) ;;",
+		"    /tmp/*) ;;",
+		'    *) echo \'{"decision":"block","reason":"Bash path boundary violation: command targets a path outside your worktree. All file modifications must stay within your assigned worktree."}\'; exit 0; ;;',
+		"  esac;",
+		"done;",
+	].join(" ");
+	return script;
+}
+
+/**
+ * Generate Bash path boundary guards for implementation capabilities.
+ *
+ * Returns a single Bash PreToolUse guard that checks file-modifying commands
+ * for absolute paths outside the worktree boundary.
+ *
+ * Only applied to builder/merger agents (implementation capabilities).
+ * Non-implementation agents already have all file-modifying Bash commands
+ * blocked via buildBashFileGuardScript().
+ */
+export function getBashPathBoundaryGuards(): HookEntry[] {
+	return [
+		{
+			matcher: "Bash",
+			hooks: [{ type: "command", command: buildBashPathBoundaryScript() }],
+		},
+	];
+}
+
+/**
  * Generate capability-specific PreToolUse guards.
  *
  * Non-implementation capabilities (scout, reviewer, lead, coordinator, supervisor, monitor) get:
@@ -272,12 +426,12 @@ export function buildBashFileGuardScript(
  * - Bash file-modification command guards (sed -i, echo >, mv, rm, etc.)
  * - Coordination capabilities (coordinator, supervisor) get git add/commit whitelisted
  *
+ * Implementation capabilities (builder, merger) get:
+ * - Bash path boundary guards (validates absolute paths stay in worktree)
+ *
  * All overstory-managed agents get:
  * - Claude Code native team/task tool blocks (Task, TeamCreate, SendMessage, etc.)
  *   to ensure delegation goes through overstory sling
- *
- * Implementation capabilities (builder, merger) get only the native team tool blocks
- * beyond the universal danger guards from getDangerGuards().
  *
  * Note: All capabilities also receive Bash danger guards via getDangerGuards().
  */
@@ -312,6 +466,12 @@ export function getCapabilityGuards(capability: string): HookEntry[] {
 			],
 		};
 		guards.push(bashFileGuard);
+	}
+
+	// Implementation capabilities get Bash path boundary validation
+	// (non-implementation agents already block all file-modifying Bash commands)
+	if (IMPLEMENTATION_CAPABILITIES.has(capability)) {
+		guards.push(...getBashPathBoundaryGuards());
 	}
 
 	return guards;
@@ -361,9 +521,10 @@ export async function deployHooks(
 
 	// Parse the base config and merge guards into PreToolUse
 	const config = JSON.parse(content) as { hooks: Record<string, HookEntry[]> };
+	const pathGuards = getPathBoundaryGuards();
 	const dangerGuards = getDangerGuards(agentName);
 	const capabilityGuards = getCapabilityGuards(capability);
-	const allGuards = [...dangerGuards, ...capabilityGuards];
+	const allGuards = [...pathGuards, ...dangerGuards, ...capabilityGuards];
 
 	if (allGuards.length > 0) {
 		const preToolUse = config.hooks.PreToolUse ?? [];

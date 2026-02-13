@@ -13,14 +13,26 @@
 - **Task ID:** {{BEAD_ID}}
 - **Spec:** {{SPEC_PATH}}
 - **Branch:** {{BRANCH_NAME}}
+- **Worktree:** {{WORKTREE_PATH}}
 - **Parent:** {{PARENT_AGENT}}
 - **Depth:** {{DEPTH}}
 
 {{SPEC_INSTRUCTION}}
 
+## Working Directory
+
+Your worktree root is: `{{WORKTREE_PATH}}`
+
+**CRITICAL**: All file operations MUST use paths within this directory.
+- Use paths relative to your worktree root, or absolute paths starting with `{{WORKTREE_PATH}}`
+- Writing to the canonical repo root instead of your worktree is a critical error (PATH_BOUNDARY_VIOLATION)
+- You may READ files from the canonical repo for context, but all WRITES go to your worktree
+
 ## File Scope (exclusive ownership)
 
-You may ONLY modify the files listed below. Do not touch any other files.
+These paths are relative to your worktree root: `{{WORKTREE_PATH}}`
+
+You may ONLY modify the files listed below within your worktree. Do not touch any other files.
 If you need changes outside your scope, send mail to your parent agent
 requesting the modification.
 

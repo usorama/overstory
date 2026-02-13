@@ -196,6 +196,7 @@ async function startCoordinator(args: string[], deps: CoordinatorDeps = {}): Pro
 		pid,
 		parentAgent: null, // Top of hierarchy
 		depth: 0,
+		runId: null,
 		startedAt: new Date().toISOString(),
 		lastActivity: new Date().toISOString(),
 		escalationLevel: 0,

@@ -25,6 +25,7 @@ function makeAgent(overrides: Partial<AgentSession> = {}): AgentSession {
 		pid: 12345,
 		parentAgent: null,
 		depth: 0,
+		runId: null,
 		startedAt: new Date(Date.now() - 60_000).toISOString(),
 		lastActivity: new Date().toISOString(),
 		escalationLevel: 0,

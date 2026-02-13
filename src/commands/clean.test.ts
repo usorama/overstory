@@ -164,6 +164,7 @@ describe("--all", () => {
 				pid: 12345,
 				parentAgent: null,
 				depth: 1,
+				runId: null,
 				startedAt: new Date().toISOString(),
 				lastActivity: new Date().toISOString(),
 				escalationLevel: 0,

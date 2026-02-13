@@ -12,8 +12,20 @@ import { MailError, ValidationError } from "../errors.ts";
 import { createMailClient } from "../mail/client.ts";
 import { createMailStore } from "../mail/store.ts";
 import { MAIL_MESSAGE_TYPES } from "../types.ts";
-import type { MailMessage } from "../types.ts";
+import type { MailMessage, MailMessageType } from "../types.ts";
 import { nudgeAgent } from "./nudge.ts";
+
+/**
+ * Protocol message types that require immediate recipient attention.
+ * These trigger auto-nudge regardless of priority level.
+ */
+const AUTO_NUDGE_TYPES: ReadonlySet<MailMessageType> = new Set([
+	"worker_done",
+	"merge_ready",
+	"error",
+	"escalation",
+	"merge_failed",
+]);
 
 /**
  * Parse a named flag value from an args array.
@@ -160,15 +172,17 @@ async function handleSend(args: string[], cwd: string): Promise<void> {
 			process.stdout.write(`✉️  Sent message ${id} to ${to}\n`);
 		}
 
-		// Auto-nudge for urgent/high priority mail
-		if (priority === "urgent" || priority === "high") {
+		// Auto-nudge for urgent/high priority OR actionable protocol types
+		const shouldNudge = priority === "urgent" || priority === "high" || AUTO_NUDGE_TYPES.has(type);
+		if (shouldNudge) {
+			const nudgeReason = AUTO_NUDGE_TYPES.has(type) ? type : `${priority} priority`;
 			const result = await nudgeAgent(
 				cwd,
 				to,
-				`[NUDGE from ${from}] New ${priority} mail: ${subject}`,
+				`[NUDGE from ${from}] New ${nudgeReason} mail: ${subject}`,
 			);
 			if (result.delivered && !hasFlag(args, "--json")) {
-				process.stdout.write(`📢 Auto-nudged "${to}" (${priority} priority)\n`);
+				process.stdout.write(`📢 Auto-nudged "${to}" (${nudgeReason})\n`);
 			}
 		}
 	} finally {

@@ -371,6 +371,30 @@ export async function killSession(name: string): Promise<void> {
 }
 
 /**
+ * Detect the current tmux session name.
+ *
+ * Returns the session name if running inside tmux, null otherwise.
+ * Used by `overstory prime` to register the orchestrator's tmux session
+ * so agents can nudge the orchestrator when they have results.
+ */
+export async function getCurrentSessionName(): Promise<string | null> {
+	if (!process.env.TMUX) {
+		return null;
+	}
+	const { exitCode, stdout } = await runCommand([
+		"tmux",
+		"display-message",
+		"-p",
+		"#{session_name}",
+	]);
+	if (exitCode !== 0) {
+		return null;
+	}
+	const name = stdout.trim();
+	return name.length > 0 ? name : null;
+}
+
+/**
  * Check whether a tmux session is still alive.
  *
  * @param name - Session name to check

@@ -351,6 +351,7 @@ export async function slingCommand(args: string[]): Promise<void> {
 		beadId: taskId,
 		specPath: absoluteSpecPath,
 		branchName,
+		worktreePath,
 		fileScope,
 		mulchDomains: config.mulch.enabled ? config.mulch.domains : [],
 		parentAgent: parentAgent,
@@ -393,6 +394,7 @@ export async function slingCommand(args: string[]): Promise<void> {
 	const claudeCmd = `claude --model ${agentDef.model} --dangerously-skip-permissions`;
 	const pid = await createSession(tmuxSessionName, worktreePath, claudeCmd, {
 		OVERSTORY_AGENT_NAME: name,
+		OVERSTORY_WORKTREE_PATH: worktreePath,
 	});
 
 	// 12. Record session BEFORE sending the beacon so that hook-triggered
@@ -411,6 +413,7 @@ export async function slingCommand(args: string[]): Promise<void> {
 		pid,
 		parentAgent: parentAgent,
 		depth,
+		runId: null,
 		startedAt: new Date().toISOString(),
 		lastActivity: new Date().toISOString(),
 		escalationLevel: 0,

@@ -45,6 +45,7 @@ function makeSession(overrides: Partial<AgentSession> = {}): AgentSession {
 		pid: 12345,
 		parentAgent: null,
 		depth: 0,
+		runId: null,
 		startedAt: new Date().toISOString(),
 		lastActivity: new Date().toISOString(),
 		escalationLevel: 0,
@@ -107,5 +108,52 @@ describe("nudgeAgent", () => {
 		const result = await nudgeAgent(tempDir, "test-agent");
 		expect(result.delivered).toBe(false);
 		expect(result.reason).toContain("No active session");
+	});
+
+	test("resolves orchestrator from orchestrator-tmux.json fallback", async () => {
+		// No sessions.json, but orchestrator-tmux.json exists
+		const { mkdir } = await import("node:fs/promises");
+		await mkdir(join(tempDir, ".overstory"), { recursive: true });
+		await Bun.write(
+			join(tempDir, ".overstory", "orchestrator-tmux.json"),
+			`${JSON.stringify({ tmuxSession: "my-session", registeredAt: new Date().toISOString() }, null, "\t")}\n`,
+		);
+
+		const { nudgeAgent } = await importNudge();
+		const result = await nudgeAgent(tempDir, "orchestrator");
+		// Will fail at tmux alive check (no real tmux), but should get past resolution
+		expect(result.delivered).toBe(false);
+		expect(result.reason).toContain("not alive");
+	});
+
+	test("returns error when orchestrator has no tmux registration", async () => {
+		const { mkdir } = await import("node:fs/promises");
+		await mkdir(join(tempDir, ".overstory"), { recursive: true });
+		// No orchestrator-tmux.json and no sessions.json entry
+		const { nudgeAgent } = await importNudge();
+		const result = await nudgeAgent(tempDir, "orchestrator");
+		expect(result.delivered).toBe(false);
+		expect(result.reason).toContain("No active session");
+	});
+
+	test("prefers sessions.json over orchestrator-tmux.json for orchestrator", async () => {
+		// If orchestrator somehow appears in sessions.json, use that
+		await writeSessions(tempDir, [
+			makeSession({
+				agentName: "orchestrator",
+				tmuxSession: "overstory-orchestrator",
+				state: "working",
+			}),
+		]);
+		await Bun.write(
+			join(tempDir, ".overstory", "orchestrator-tmux.json"),
+			`${JSON.stringify({ tmuxSession: "fallback-session" }, null, "\t")}\n`,
+		);
+
+		const { nudgeAgent } = await importNudge();
+		const result = await nudgeAgent(tempDir, "orchestrator");
+		// Should use sessions.json entry, fail at tmux alive check
+		expect(result.delivered).toBe(false);
+		expect(result.reason).toContain("overstory-orchestrator");
 	});
 });

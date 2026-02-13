@@ -171,6 +171,7 @@ async function startMonitor(args: string[]): Promise<void> {
 		pid,
 		parentAgent: null, // Top of hierarchy (alongside coordinator)
 		depth: 0,
+		runId: null,
 		startedAt: new Date().toISOString(),
 		lastActivity: new Date().toISOString(),
 		escalationLevel: 0,

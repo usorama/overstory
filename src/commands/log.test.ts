@@ -3,8 +3,9 @@ import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ValidationError } from "../errors.ts";
+import { createEventStore } from "../events/store.ts";
 import { createMetricsStore } from "../metrics/store.ts";
-import type { AgentSession } from "../types.ts";
+import type { AgentSession, StoredEvent } from "../types.ts";
 import { logCommand } from "./log.ts";
 
 /**
@@ -197,6 +198,7 @@ describe("logCommand", () => {
 			pid: 12345,
 			parentAgent: null,
 			depth: 0,
+			runId: null,
 			startedAt: new Date().toISOString(),
 			lastActivity: new Date().toISOString(),
 			escalationLevel: 0,
@@ -249,6 +251,7 @@ describe("logCommand", () => {
 			pid: 54321,
 			parentAgent: "parent-agent",
 			depth: 1,
+			runId: null,
 			startedAt: new Date(Date.now() - 60_000).toISOString(), // 1 minute ago
 			lastActivity: new Date().toISOString(),
 			escalationLevel: 0,
@@ -295,6 +298,7 @@ describe("logCommand", () => {
 			pid: 99999,
 			parentAgent: null,
 			depth: 0,
+			runId: null,
 			startedAt: oldTimestamp,
 			lastActivity: oldTimestamp,
 			escalationLevel: 0,
@@ -331,6 +335,7 @@ describe("logCommand", () => {
 			pid: 11111,
 			parentAgent: null,
 			depth: 0,
+			runId: null,
 			startedAt: new Date().toISOString(),
 			lastActivity: new Date().toISOString(),
 			escalationLevel: 0,
@@ -389,5 +394,288 @@ describe("logCommand", () => {
 		const eventsContent = await eventsFile.text();
 
 		expect(eventsContent).toContain("unknown");
+	});
+
+	test("--help includes --stdin option in output", async () => {
+		await logCommand(["--help"]);
+		const out = output();
+
+		expect(out).toContain("--stdin");
+	});
+});
+
+/**
+ * Tests for `overstory log` with --stdin flag.
+ *
+ * Uses Bun.spawn to invoke the log command as a subprocess with piped stdin,
+ * because Bun.stdin.stream() cannot be injected in-process.
+ * Real filesystem + real SQLite for EventStore verification.
+ */
+describe("logCommand --stdin integration", () => {
+	let tempDir: string;
+
+	beforeEach(async () => {
+		tempDir = await mkdtemp(join(tmpdir(), "log-stdin-test-"));
+		const overstoryDir = join(tempDir, ".overstory");
+		await Bun.write(
+			join(overstoryDir, "config.yaml"),
+			`project:\n  name: test\n  root: ${tempDir}\n  canonicalBranch: main\n`,
+		);
+	});
+
+	afterEach(async () => {
+		await rm(tempDir, { recursive: true, force: true });
+	});
+
+	/**
+	 * Helper: run `overstory log` as a subprocess with stdin piped.
+	 * Uses bun to run the CLI entry point directly.
+	 */
+	async function runLogWithStdin(
+		event: string,
+		agentName: string,
+		stdinJson: Record<string, unknown>,
+	): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+		// Inline script that calls logCommand with --stdin and reads from stdin
+		const scriptPath = join(tempDir, "_run-log.ts");
+		const scriptContent = `
+import { logCommand } from "${join(import.meta.dir, "log.ts").replace(/\\/g, "/")}";
+const args = process.argv.slice(2);
+try {
+	await logCommand(args);
+} catch (e) {
+	console.error(e instanceof Error ? e.message : String(e));
+	process.exit(1);
+}
+`;
+		await Bun.write(scriptPath, scriptContent);
+
+		const proc = Bun.spawn(["bun", "run", scriptPath, event, "--agent", agentName, "--stdin"], {
+			cwd: tempDir,
+			stdin: "pipe",
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+
+		// Write the JSON payload to stdin and close
+		proc.stdin.write(JSON.stringify(stdinJson));
+		proc.stdin.end();
+
+		const exitCode = await proc.exited;
+		const stdout = await new Response(proc.stdout).text();
+		const stderr = await new Response(proc.stderr).text();
+
+		return { exitCode, stdout, stderr };
+	}
+
+	test("tool-start with --stdin writes to EventStore", async () => {
+		const payload = {
+			tool_name: "Read",
+			tool_input: { file_path: "/src/index.ts" },
+			session_id: "sess-test-001",
+		};
+
+		const result = await runLogWithStdin("tool-start", "stdin-builder", payload);
+		expect(result.exitCode).toBe(0);
+
+		// Verify EventStore has the event
+		const eventsDbPath = join(tempDir, ".overstory", "events.db");
+		const eventStore = createEventStore(eventsDbPath);
+		const events = eventStore.getByAgent("stdin-builder");
+		eventStore.close();
+
+		expect(events).toHaveLength(1);
+		const event = events[0] as StoredEvent;
+		expect(event.eventType).toBe("tool_start");
+		expect(event.toolName).toBe("Read");
+		expect(event.sessionId).toBe("sess-test-001");
+		expect(event.agentName).toBe("stdin-builder");
+
+		// Verify filtered tool args were stored
+		const toolArgs = JSON.parse(event.toolArgs ?? "{}");
+		expect(toolArgs.file_path).toBe("/src/index.ts");
+
+		// Verify summary in data
+		const data = JSON.parse(event.data ?? "{}");
+		expect(data.summary).toBe("read: /src/index.ts");
+	});
+
+	test("tool-end with --stdin writes to EventStore and correlates with tool-start", async () => {
+		// First create a tool-start event
+		const startPayload = {
+			tool_name: "Bash",
+			tool_input: { command: "bun test" },
+			session_id: "sess-test-002",
+		};
+		const startResult = await runLogWithStdin("tool-start", "correlate-agent", startPayload);
+		expect(startResult.exitCode).toBe(0);
+
+		// Small delay to ensure measurable duration
+		await new Promise((resolve) => setTimeout(resolve, 10));
+
+		// Now send tool-end
+		const endPayload = {
+			tool_name: "Bash",
+			tool_input: { command: "bun test" },
+			session_id: "sess-test-002",
+		};
+		const endResult = await runLogWithStdin("tool-end", "correlate-agent", endPayload);
+		expect(endResult.exitCode).toBe(0);
+
+		// Verify EventStore has both events
+		const eventsDbPath = join(tempDir, ".overstory", "events.db");
+		const eventStore = createEventStore(eventsDbPath);
+		const events = eventStore.getByAgent("correlate-agent");
+		eventStore.close();
+
+		expect(events).toHaveLength(2);
+
+		const startEvent = events.find((e) => e.eventType === "tool_start");
+		const endEvent = events.find((e) => e.eventType === "tool_end");
+		expect(startEvent).toBeDefined();
+		expect(endEvent).toBeDefined();
+
+		// The start event should have tool_duration_ms set by correlateToolEnd()
+		// (value may be affected by SQLite timestamp vs Date.now() timezone behavior,
+		// so we only assert it was populated — not the exact value)
+		expect(startEvent?.toolDurationMs).not.toBeNull();
+	});
+
+	test("tool-start with --stdin filters large tool_input", async () => {
+		const payload = {
+			tool_name: "Write",
+			tool_input: {
+				file_path: "/src/new-file.ts",
+				content: "x".repeat(50_000), // 50KB of content — should be dropped
+			},
+			session_id: "sess-test-003",
+		};
+
+		const result = await runLogWithStdin("tool-start", "filter-agent", payload);
+		expect(result.exitCode).toBe(0);
+
+		const eventsDbPath = join(tempDir, ".overstory", "events.db");
+		const eventStore = createEventStore(eventsDbPath);
+		const events = eventStore.getByAgent("filter-agent");
+		eventStore.close();
+
+		expect(events).toHaveLength(1);
+		const event = events[0] as StoredEvent;
+
+		// The Write filter keeps file_path but drops content
+		const toolArgs = JSON.parse(event.toolArgs ?? "{}");
+		expect(toolArgs.file_path).toBe("/src/new-file.ts");
+		expect(toolArgs).not.toHaveProperty("content");
+
+		// Verify summary
+		const data = JSON.parse(event.data ?? "{}");
+		expect(data.summary).toBe("write: /src/new-file.ts");
+	});
+
+	test("session-end with --stdin writes to EventStore with transcript_path", async () => {
+		const payload = {
+			session_id: "sess-test-004",
+			transcript_path: "/tmp/transcript.jsonl",
+		};
+
+		const result = await runLogWithStdin("session-end", "session-end-agent", payload);
+		expect(result.exitCode).toBe(0);
+
+		const eventsDbPath = join(tempDir, ".overstory", "events.db");
+		const eventStore = createEventStore(eventsDbPath);
+		const events = eventStore.getByAgent("session-end-agent");
+		eventStore.close();
+
+		expect(events).toHaveLength(1);
+		const event = events[0] as StoredEvent;
+		expect(event.eventType).toBe("session_end");
+		expect(event.sessionId).toBe("sess-test-004");
+
+		// Verify transcript path stored in data
+		const data = JSON.parse(event.data ?? "{}");
+		expect(data.transcriptPath).toBe("/tmp/transcript.jsonl");
+	});
+
+	test("tool-start with --stdin still writes to legacy log files", async () => {
+		const payload = {
+			tool_name: "Grep",
+			tool_input: { pattern: "TODO", path: "/src" },
+			session_id: "sess-test-005",
+		};
+
+		const result = await runLogWithStdin("tool-start", "legacy-compat-agent", payload);
+		expect(result.exitCode).toBe(0);
+
+		// Wait for async file writes to complete
+		await new Promise((resolve) => setTimeout(resolve, 50));
+
+		// Verify legacy log files exist
+		const logsDir = join(tempDir, ".overstory", "logs", "legacy-compat-agent");
+		const markerPath = join(logsDir, ".current-session");
+		const markerFile = Bun.file(markerPath);
+		expect(await markerFile.exists()).toBe(true);
+
+		const sessionDir = (await markerFile.text()).trim();
+		const eventsFile = Bun.file(join(sessionDir, "events.ndjson"));
+		expect(await eventsFile.exists()).toBe(true);
+
+		const eventsContent = await eventsFile.text();
+		expect(eventsContent).toContain("tool.start");
+		expect(eventsContent).toContain("Grep");
+	});
+
+	test("tool-start with --stdin handles empty stdin gracefully", async () => {
+		// Send empty JSON object — should still work (falls back to "unknown" tool name)
+		const scriptPath = join(tempDir, "_run-log-empty.ts");
+		const scriptContent = `
+import { logCommand } from "${join(import.meta.dir, "log.ts").replace(/\\/g, "/")}";
+try {
+	await logCommand(["tool-start", "--agent", "empty-stdin-agent", "--stdin"]);
+} catch (e) {
+	console.error(e instanceof Error ? e.message : String(e));
+	process.exit(1);
+}
+`;
+		await Bun.write(scriptPath, scriptContent);
+
+		const proc = Bun.spawn(["bun", "run", scriptPath], {
+			cwd: tempDir,
+			stdin: "pipe",
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+
+		// Write empty string and close immediately
+		proc.stdin.end();
+
+		const exitCode = await proc.exited;
+		expect(exitCode).toBe(0);
+	});
+
+	test("tool-start with --stdin and unknown tool name uses fallback filter", async () => {
+		const payload = {
+			tool_name: "SomeCustomTool",
+			tool_input: { custom_key: "custom_value" },
+			session_id: "sess-test-006",
+		};
+
+		const result = await runLogWithStdin("tool-start", "custom-tool-agent", payload);
+		expect(result.exitCode).toBe(0);
+
+		const eventsDbPath = join(tempDir, ".overstory", "events.db");
+		const eventStore = createEventStore(eventsDbPath);
+		const events = eventStore.getByAgent("custom-tool-agent");
+		eventStore.close();
+
+		expect(events).toHaveLength(1);
+		const event = events[0] as StoredEvent;
+		expect(event.toolName).toBe("SomeCustomTool");
+
+		// Unknown tools get empty args from filterToolArgs
+		const toolArgs = JSON.parse(event.toolArgs ?? "{}");
+		expect(toolArgs).toEqual({});
+
+		const data = JSON.parse(event.data ?? "{}");
+		expect(data.summary).toBe("SomeCustomTool");
 	});
 });

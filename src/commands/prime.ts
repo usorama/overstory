@@ -22,6 +22,7 @@ import type {
 	SessionCheckpoint,
 	SessionMetrics,
 } from "../types.ts";
+import { getCurrentSessionName } from "../worktree/tmux.ts";
 
 /**
  * Parse CLI flags from the args array.
@@ -266,6 +267,20 @@ async function outputOrchestratorContext(
 	compact: boolean,
 	expertiseOutput: string | null,
 ): Promise<void> {
+	// Register orchestrator tmux session for reverse-nudge (agents → orchestrator)
+	try {
+		const tmuxSession = await getCurrentSessionName();
+		if (tmuxSession) {
+			const regPath = join(config.project.root, ".overstory", "orchestrator-tmux.json");
+			await Bun.write(
+				regPath,
+				`${JSON.stringify({ tmuxSession, registeredAt: new Date().toISOString() }, null, "\t")}\n`,
+			);
+		}
+	} catch {
+		// Tmux detection is optional — silently skip
+	}
+
 	const sections: string[] = [];
 
 	// Project section

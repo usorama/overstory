@@ -28,7 +28,7 @@
 				"hooks": [
 					{
 						"type": "command",
-						"command": "read -r INPUT; TOOL_NAME=$(echo \"$INPUT\" | sed 's/.*\"tool_name\": *\"\\([^\"]*\\)\".*/\\1/'); overstory log tool-start --agent {{AGENT_NAME}} --tool-name \"$TOOL_NAME\""
+						"command": "read -r INPUT; echo \"$INPUT\" | overstory log tool-start --agent {{AGENT_NAME}} --stdin"
 					}
 				]
 			}
@@ -39,7 +39,7 @@
 				"hooks": [
 					{
 						"type": "command",
-						"command": "read -r INPUT; TOOL_NAME=$(echo \"$INPUT\" | sed 's/.*\"tool_name\": *\"\\([^\"]*\\)\".*/\\1/'); overstory log tool-end --agent {{AGENT_NAME}} --tool-name \"$TOOL_NAME\""
+						"command": "read -r INPUT; echo \"$INPUT\" | overstory log tool-end --agent {{AGENT_NAME}} --stdin"
 					}
 				]
 			}
@@ -50,7 +50,7 @@
 				"hooks": [
 					{
 						"type": "command",
-						"command": "overstory log session-end --agent {{AGENT_NAME}}"
+						"command": "read -r INPUT; echo \"$INPUT\" | overstory log session-end --agent {{AGENT_NAME}} --stdin"
 					}
 				]
 			}

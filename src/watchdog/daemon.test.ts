@@ -70,6 +70,7 @@ function makeSession(overrides: Partial<AgentSession> = {}): AgentSession {
 		pid: process.pid, // Use our own PID so isProcessRunning returns true
 		parentAgent: null,
 		depth: 0,
+		runId: null,
 		escalationLevel: 0,
 		stalledSince: null,
 		startedAt: new Date().toISOString(),
