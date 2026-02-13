@@ -373,6 +373,46 @@ describe("token fields", () => {
 	});
 });
 
+// === purge ===
+
+describe("purge", () => {
+	test("purge all deletes everything and returns count", () => {
+		store.recordSession(makeSession({ agentName: "agent-a", beadId: "task-1" }));
+		store.recordSession(makeSession({ agentName: "agent-b", beadId: "task-2" }));
+		store.recordSession(makeSession({ agentName: "agent-c", beadId: "task-3" }));
+
+		const count = store.purge({ all: true });
+		expect(count).toBe(3);
+		expect(store.getRecentSessions(10)).toEqual([]);
+	});
+
+	test("purge by agent deletes only that agent's records", () => {
+		store.recordSession(makeSession({ agentName: "agent-a", beadId: "task-1" }));
+		store.recordSession(makeSession({ agentName: "agent-b", beadId: "task-2" }));
+		store.recordSession(makeSession({ agentName: "agent-a", beadId: "task-3" }));
+
+		const count = store.purge({ agent: "agent-a" });
+		expect(count).toBe(2);
+
+		const remaining = store.getRecentSessions(10);
+		expect(remaining).toHaveLength(1);
+		expect(remaining[0]?.agentName).toBe("agent-b");
+	});
+
+	test("purge on empty DB returns 0", () => {
+		const count = store.purge({ all: true });
+		expect(count).toBe(0);
+	});
+
+	test("purge with no options returns 0 without deleting", () => {
+		store.recordSession(makeSession({ beadId: "task-1" }));
+
+		const count = store.purge({});
+		expect(count).toBe(0);
+		expect(store.getRecentSessions(10)).toHaveLength(1);
+	});
+});
+
 // === close ===
 
 describe("close", () => {

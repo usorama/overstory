@@ -13,6 +13,8 @@ export interface MetricsStore {
 	getRecentSessions(limit?: number): SessionMetrics[];
 	getSessionsByAgent(agentName: string): SessionMetrics[];
 	getAverageDuration(capability?: string): number;
+	/** Delete metrics matching the given criteria. Returns the number of rows deleted. */
+	purge(options: { all?: boolean; agent?: string }): number;
 	close(): void;
 }
 
@@ -206,6 +208,32 @@ export function createMetricsStore(dbPath: string): MetricsStore {
 			}
 			const row = avgDurationAllStmt.get({});
 			return row?.avg_duration ?? 0;
+		},
+
+		purge(options: { all?: boolean; agent?: string }): number {
+			if (options.all) {
+				const countRow = db
+					.prepare<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM sessions")
+					.get();
+				const count = countRow?.cnt ?? 0;
+				db.prepare("DELETE FROM sessions").run();
+				return count;
+			}
+
+			if (options.agent !== undefined) {
+				const countRow = db
+					.prepare<{ cnt: number }, { $agent: string }>(
+						"SELECT COUNT(*) as cnt FROM sessions WHERE agent_name = $agent",
+					)
+					.get({ $agent: options.agent });
+				const count = countRow?.cnt ?? 0;
+				db.prepare<void, { $agent: string }>("DELETE FROM sessions WHERE agent_name = $agent").run({
+					$agent: options.agent,
+				});
+				return count;
+			}
+
+			return 0;
 		},
 
 		close(): void {

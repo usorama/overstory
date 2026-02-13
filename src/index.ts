@@ -6,6 +6,7 @@
  * Usage: overstory <command> [args...]
  */
 
+import { cleanCommand } from "./commands/clean.ts";
 import { coordinatorCommand } from "./commands/coordinator.ts";
 import { dashboardCommand } from "./commands/dashboard.ts";
 import { groupCommand } from "./commands/group.ts";
@@ -45,6 +46,7 @@ Commands:
   merge                   Merge agent branches into canonical
   nudge <agent> [msg]     Send a text nudge to an agent
   group <sub>             Task groups (create/status/add/remove/list)
+  clean                   Wipe runtime state (nuclear cleanup)
   worktree <sub>          Manage worktrees (list/clean)
   log <event>             Log a hook event
   watch                   Start watchdog daemon
@@ -62,6 +64,7 @@ const COMMANDS = [
 	"prime",
 	"status",
 	"dashboard",
+	"clean",
 	"coordinator",
 	"supervisor",
 	"hooks",
@@ -139,6 +142,9 @@ async function main(): Promise<void> {
 			break;
 		case "dashboard":
 			await dashboardCommand(commandArgs);
+			break;
+		case "clean":
+			await cleanCommand(commandArgs);
 			break;
 		case "coordinator":
 			await coordinatorCommand(commandArgs);
