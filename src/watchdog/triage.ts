@@ -96,7 +96,11 @@ async function readRecentLog(logsDir: string): Promise<string> {
 /**
  * Build the triage prompt for Claude analysis.
  */
-function buildTriagePrompt(agentName: string, lastActivity: string, logContent: string): string {
+export function buildTriagePrompt(
+	agentName: string,
+	lastActivity: string,
+	logContent: string,
+): string {
 	return [
 		"Analyze this agent log and classify the situation.",
 		`Agent: ${agentName}`,
@@ -143,7 +147,7 @@ async function spawnClaude(prompt: string): Promise<string> {
  * @param response - Claude's raw response text
  * @returns "retry" | "terminate" | "extend"
  */
-function classifyResponse(response: string): "retry" | "terminate" | "extend" {
+export function classifyResponse(response: string): "retry" | "terminate" | "extend" {
 	const lower = response.toLowerCase();
 
 	if (lower.includes("retry") || lower.includes("recoverable")) {
