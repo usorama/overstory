@@ -9,6 +9,7 @@
 import { join } from "node:path";
 import { resolveProjectRoot } from "../config.ts";
 import { MailError, ValidationError } from "../errors.ts";
+import { createEventStore } from "../events/store.ts";
 import { createMailClient } from "../mail/client.ts";
 import { createMailStore } from "../mail/store.ts";
 import { MAIL_MESSAGE_TYPES } from "../types.ts";
@@ -241,6 +242,39 @@ async function handleSend(args: string[], cwd: string): Promise<void> {
 	const client = openClient(cwd);
 	try {
 		const id = client.send({ from, to, subject, body, type, priority, payload });
+
+		// Record mail_sent event to EventStore (fire-and-forget)
+		try {
+			const eventsDbPath = join(cwd, ".overstory", "events.db");
+			const eventStore = createEventStore(eventsDbPath);
+			try {
+				let runId: string | null = null;
+				const runIdPath = join(cwd, ".overstory", "current-run.txt");
+				const runIdFile = Bun.file(runIdPath);
+				if (await runIdFile.exists()) {
+					const text = await runIdFile.text();
+					const trimmed = text.trim();
+					if (trimmed.length > 0) {
+						runId = trimmed;
+					}
+				}
+				eventStore.insert({
+					runId,
+					agentName: from,
+					sessionId: null,
+					eventType: "mail_sent",
+					toolName: null,
+					toolArgs: null,
+					toolDurationMs: null,
+					level: "info",
+					data: JSON.stringify({ to, subject, type, priority, messageId: id }),
+				});
+			} finally {
+				eventStore.close();
+			}
+		} catch {
+			// Event recording failure is non-fatal
+		}
 
 		if (hasFlag(args, "--json")) {
 			process.stdout.write(`${JSON.stringify({ id })}\n`);

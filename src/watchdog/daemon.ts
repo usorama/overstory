@@ -22,14 +22,65 @@
 
 import { join } from "node:path";
 import { nudgeAgent } from "../commands/nudge.ts";
+import { createEventStore } from "../events/store.ts";
 import { openSessionStore } from "../sessions/compat.ts";
-import type { AgentSession, HealthCheck } from "../types.ts";
+import type { AgentSession, EventStore, HealthCheck } from "../types.ts";
 import { isSessionAlive, killSession } from "../worktree/tmux.ts";
 import { evaluateHealth, transitionState } from "./health.ts";
 import { triageAgent } from "./triage.ts";
 
 /** Maximum escalation level (terminate). */
 const MAX_ESCALATION_LEVEL = 3;
+
+/**
+ * Read the current run ID from current-run.txt, or null if no active run.
+ * Async because it uses Bun.file().
+ */
+async function readCurrentRunId(overstoryDir: string): Promise<string | null> {
+	const path = join(overstoryDir, "current-run.txt");
+	const file = Bun.file(path);
+	if (!(await file.exists())) {
+		return null;
+	}
+	try {
+		const text = await file.text();
+		const trimmed = text.trim();
+		return trimmed.length > 0 ? trimmed : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Fire-and-forget: record an event to EventStore. Never throws.
+ */
+function recordEvent(
+	eventStore: EventStore | null,
+	event: {
+		runId: string | null;
+		agentName: string;
+		eventType: "custom" | "mail_sent";
+		level: "debug" | "info" | "warn" | "error";
+		data: Record<string, unknown>;
+	},
+): void {
+	if (!eventStore) return;
+	try {
+		eventStore.insert({
+			runId: event.runId,
+			agentName: event.agentName,
+			sessionId: null,
+			eventType: event.eventType,
+			toolName: null,
+			toolArgs: null,
+			toolDurationMs: null,
+			level: event.level,
+			data: JSON.stringify(event.data),
+		});
+	} catch {
+		// Fire-and-forget: event recording must never break the daemon
+	}
+}
 
 /** Options shared between startDaemon and runDaemonTick. */
 export interface DaemonOptions {
@@ -57,6 +108,8 @@ export interface DaemonOptions {
 		message: string,
 		force: boolean,
 	) => Promise<{ delivered: boolean; reason?: string }>;
+	/** Dependency injection for testing. Overrides EventStore creation. */
+	_eventStore?: EventStore | null;
 }
 
 /**
@@ -122,6 +175,26 @@ export async function runDaemonTick(options: DaemonOptions): Promise<void> {
 
 	const overstoryDir = join(root, ".overstory");
 	const { store } = openSessionStore(overstoryDir);
+
+	// Open EventStore for recording daemon events (fire-and-forget)
+	let eventStore: EventStore | null = null;
+	let runId: string | null = null;
+	const useInjectedEventStore = options._eventStore !== undefined;
+	if (useInjectedEventStore) {
+		eventStore = options._eventStore ?? null;
+	} else {
+		try {
+			const eventsDbPath = join(overstoryDir, "events.db");
+			eventStore = createEventStore(eventsDbPath);
+		} catch {
+			// EventStore creation failure is non-fatal for the daemon
+		}
+	}
+	try {
+		runId = await readCurrentRunId(overstoryDir);
+	} catch {
+		// Reading run ID failure is non-fatal
+	}
 
 	try {
 		const thresholds = {
@@ -206,6 +279,8 @@ export async function runDaemonTick(options: DaemonOptions): Promise<void> {
 					tmux,
 					triage,
 					nudge,
+					eventStore,
+					runId,
 				});
 
 				if (actionResult.terminated) {
@@ -224,6 +299,14 @@ export async function runDaemonTick(options: DaemonOptions): Promise<void> {
 		}
 	} finally {
 		store.close();
+		// Close EventStore only if we created it (not injected)
+		if (eventStore && !useInjectedEventStore) {
+			try {
+				eventStore.close();
+			} catch {
+				// Non-fatal
+			}
+		}
 	}
 }
 
@@ -257,27 +340,45 @@ async function executeEscalationAction(ctx: {
 		message: string,
 		force: boolean,
 	) => Promise<{ delivered: boolean; reason?: string }>;
+	eventStore: EventStore | null;
+	runId: string | null;
 }): Promise<{ terminated: boolean; stateChanged: boolean }> {
-	const { session, root, tmuxAlive, tier1Enabled, tmux, triage, nudge } = ctx;
+	const { session, root, tmuxAlive, tier1Enabled, tmux, triage, nudge, eventStore, runId } = ctx;
 
 	switch (session.escalationLevel) {
 		case 0: {
 			// Level 0: warn — onHealthCheck callback already fired, no direct action
+			recordEvent(eventStore, {
+				runId,
+				agentName: session.agentName,
+				eventType: "custom",
+				level: "warn",
+				data: { type: "escalation", escalationLevel: 0, action: "warn" },
+			});
 			return { terminated: false, stateChanged: false };
 		}
 
 		case 1: {
 			// Level 1: nudge — send a tmux nudge to the agent
+			let delivered = false;
 			try {
-				await nudge(
+				const result = await nudge(
 					root,
 					session.agentName,
 					`[WATCHDOG] Agent "${session.agentName}" appears stalled. Please check your current task and report status.`,
 					true, // force — skip debounce for watchdog nudges
 				);
+				delivered = result.delivered;
 			} catch {
 				// Nudge delivery failure is non-fatal for the watchdog
 			}
+			recordEvent(eventStore, {
+				runId,
+				agentName: session.agentName,
+				eventType: "custom",
+				level: "warn",
+				data: { type: "nudge", escalationLevel: 1, delivered },
+			});
 			return { terminated: false, stateChanged: false };
 		}
 
@@ -292,6 +393,14 @@ async function executeEscalationAction(ctx: {
 				agentName: session.agentName,
 				root,
 				lastActivity: session.lastActivity,
+			});
+
+			recordEvent(eventStore, {
+				runId,
+				agentName: session.agentName,
+				eventType: "custom",
+				level: "warn",
+				data: { type: "triage", escalationLevel: 2, verdict },
 			});
 
 			if (verdict === "terminate") {
@@ -326,6 +435,13 @@ async function executeEscalationAction(ctx: {
 
 		default: {
 			// Level 3+: terminate — kill the tmux session
+			recordEvent(eventStore, {
+				runId,
+				agentName: session.agentName,
+				eventType: "custom",
+				level: "error",
+				data: { type: "escalation", escalationLevel: 3, action: "terminate" },
+			});
 			if (tmuxAlive) {
 				try {
 					await tmux.killSession(session.tmuxSession);

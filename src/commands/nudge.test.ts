@@ -3,8 +3,9 @@ import { mkdirSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createEventStore } from "../events/store.ts";
 import { createSessionStore } from "../sessions/store.ts";
-import type { AgentSession } from "../types.ts";
+import type { AgentSession, StoredEvent } from "../types.ts";
 
 /**
  * Tests for the nudge command's debounce and session lookup logic.
@@ -162,5 +163,68 @@ describe("nudgeAgent", () => {
 		// Should use sessions.db entry, fail at tmux alive check
 		expect(result.delivered).toBe(false);
 		expect(result.reason).toContain("overstory-orchestrator");
+	});
+
+	test("records nudge event to EventStore after delivery attempt", async () => {
+		// Agent exists in SessionStore but tmux is not alive — nudge fails
+		// but the event should still be recorded
+		writeSessionsToStore(tempDir, [makeSession({ state: "working" })]);
+
+		const { nudgeAgent } = await importNudge();
+		const result = await nudgeAgent(tempDir, "test-agent");
+		// Nudge fails because tmux session is not alive
+		expect(result.delivered).toBe(false);
+
+		// Verify event was recorded to events.db
+		const eventsDbPath = join(tempDir, ".overstory", "events.db");
+		const store = createEventStore(eventsDbPath);
+		try {
+			const events: StoredEvent[] = store.getTimeline({
+				since: "2000-01-01T00:00:00Z",
+			});
+			const nudgeEvent = events.find((e) => {
+				if (!e.data) return false;
+				const data = JSON.parse(e.data) as Record<string, unknown>;
+				return data.type === "nudge";
+			});
+			expect(nudgeEvent).toBeDefined();
+			expect(nudgeEvent?.eventType).toBe("custom");
+			expect(nudgeEvent?.level).toBe("info");
+			expect(nudgeEvent?.agentName).toBe("test-agent");
+
+			const data = JSON.parse(nudgeEvent?.data ?? "{}") as Record<string, unknown>;
+			expect(data.delivered).toBe(false);
+			expect(data.from).toBe("orchestrator");
+		} finally {
+			store.close();
+		}
+	});
+
+	test("nudge event includes run_id when current-run.txt exists", async () => {
+		writeSessionsToStore(tempDir, [makeSession({ state: "working" })]);
+
+		// Write a current-run.txt
+		const runId = "run-test-123";
+		await Bun.write(join(tempDir, ".overstory", "current-run.txt"), runId);
+
+		const { nudgeAgent } = await importNudge();
+		await nudgeAgent(tempDir, "test-agent");
+
+		const eventsDbPath = join(tempDir, ".overstory", "events.db");
+		const store = createEventStore(eventsDbPath);
+		try {
+			const events: StoredEvent[] = store.getTimeline({
+				since: "2000-01-01T00:00:00Z",
+			});
+			const nudgeEvent = events.find((e) => {
+				if (!e.data) return false;
+				const data = JSON.parse(e.data) as Record<string, unknown>;
+				return data.type === "nudge";
+			});
+			expect(nudgeEvent).toBeDefined();
+			expect(nudgeEvent?.runId).toBe(runId);
+		} finally {
+			store.close();
+		}
 	});
 });

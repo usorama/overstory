@@ -19,8 +19,9 @@ import { mkdir, rm } from "node:fs/promises";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createEventStore } from "../events/store.ts";
 import { createSessionStore } from "../sessions/store.ts";
-import type { AgentSession, HealthCheck } from "../types.ts";
+import type { AgentSession, HealthCheck, StoredEvent } from "../types.ts";
 import { runDaemonTick } from "./daemon.ts";
 
 // === Test constants ===
@@ -819,5 +820,269 @@ describe("daemon tick", () => {
 		// Should process without errors
 		expect(checks).toHaveLength(1);
 		expect(checks[0]?.state).toBe("working");
+	});
+});
+
+// === Event recording tests ===
+
+describe("daemon event recording", () => {
+	/** Open the events.db in the temp root and return all events. */
+	function readEvents(root: string): StoredEvent[] {
+		const dbPath = join(root, ".overstory", "events.db");
+		const store = createEventStore(dbPath);
+		try {
+			// Get all events (no agent filter — use a broad timeline)
+			return store.getTimeline({ since: "2000-01-01T00:00:00Z" });
+		} finally {
+			store.close();
+		}
+	}
+
+	test("escalation level 0 (warn) records event with type=escalation", async () => {
+		const staleActivity = new Date(Date.now() - 60_000).toISOString();
+		const session = makeSession({
+			agentName: "stalled-agent",
+			tmuxSession: "overstory-stalled-agent",
+			state: "working",
+			lastActivity: staleActivity,
+		});
+
+		writeSessionsToStore(tempRoot, [session]);
+
+		// Create EventStore and inject it
+		const eventsDbPath = join(tempRoot, ".overstory", "events.db");
+		const eventStore = createEventStore(eventsDbPath);
+
+		try {
+			await runDaemonTick({
+				root: tempRoot,
+				...THRESHOLDS,
+				nudgeIntervalMs: 60_000,
+				_tmux: tmuxWithLiveness({ "overstory-stalled-agent": true }),
+				_triage: triageAlways("extend"),
+				_nudge: nudgeTracker().nudge,
+				_eventStore: eventStore,
+			});
+		} finally {
+			eventStore.close();
+		}
+
+		const events = readEvents(tempRoot);
+		expect(events.length).toBeGreaterThanOrEqual(1);
+
+		const warnEvent = events.find((e) => {
+			if (!e.data) return false;
+			const data = JSON.parse(e.data) as Record<string, unknown>;
+			return data.type === "escalation" && data.escalationLevel === 0;
+		});
+		expect(warnEvent).toBeDefined();
+		expect(warnEvent?.eventType).toBe("custom");
+		expect(warnEvent?.level).toBe("warn");
+		expect(warnEvent?.agentName).toBe("stalled-agent");
+	});
+
+	test("escalation level 1 (nudge) records event with delivered status", async () => {
+		const staleActivity = new Date(Date.now() - 60_000).toISOString();
+		const stalledSince = new Date(Date.now() - 70_000).toISOString();
+		const session = makeSession({
+			agentName: "stalled-agent",
+			tmuxSession: "overstory-stalled-agent",
+			state: "stalled",
+			lastActivity: staleActivity,
+			escalationLevel: 0,
+			stalledSince,
+		});
+
+		writeSessionsToStore(tempRoot, [session]);
+
+		const eventsDbPath = join(tempRoot, ".overstory", "events.db");
+		const eventStore = createEventStore(eventsDbPath);
+		const nudgeMock = nudgeTracker();
+
+		try {
+			await runDaemonTick({
+				root: tempRoot,
+				...THRESHOLDS,
+				nudgeIntervalMs: 60_000,
+				_tmux: tmuxWithLiveness({ "overstory-stalled-agent": true }),
+				_triage: triageAlways("extend"),
+				_nudge: nudgeMock.nudge,
+				_eventStore: eventStore,
+			});
+		} finally {
+			eventStore.close();
+		}
+
+		const events = readEvents(tempRoot);
+		const nudgeEvent = events.find((e) => {
+			if (!e.data) return false;
+			const data = JSON.parse(e.data) as Record<string, unknown>;
+			return data.type === "nudge" && data.escalationLevel === 1;
+		});
+		expect(nudgeEvent).toBeDefined();
+		expect(nudgeEvent?.eventType).toBe("custom");
+		expect(nudgeEvent?.level).toBe("warn");
+
+		const nudgeData = JSON.parse(nudgeEvent?.data ?? "{}") as Record<string, unknown>;
+		expect(nudgeData.delivered).toBe(true);
+	});
+
+	test("escalation level 2 (triage) records event with verdict", async () => {
+		const staleActivity = new Date(Date.now() - 60_000).toISOString();
+		const stalledSince = new Date(Date.now() - 130_000).toISOString();
+		const session = makeSession({
+			agentName: "stalled-agent",
+			tmuxSession: "overstory-stalled-agent",
+			state: "stalled",
+			lastActivity: staleActivity,
+			escalationLevel: 1,
+			stalledSince,
+		});
+
+		writeSessionsToStore(tempRoot, [session]);
+
+		const eventsDbPath = join(tempRoot, ".overstory", "events.db");
+		const eventStore = createEventStore(eventsDbPath);
+
+		try {
+			await runDaemonTick({
+				root: tempRoot,
+				...THRESHOLDS,
+				nudgeIntervalMs: 60_000,
+				tier1Enabled: true,
+				_tmux: tmuxWithLiveness({ "overstory-stalled-agent": true }),
+				_triage: triageAlways("extend"),
+				_nudge: nudgeTracker().nudge,
+				_eventStore: eventStore,
+			});
+		} finally {
+			eventStore.close();
+		}
+
+		const events = readEvents(tempRoot);
+		const triageEvent = events.find((e) => {
+			if (!e.data) return false;
+			const data = JSON.parse(e.data) as Record<string, unknown>;
+			return data.type === "triage" && data.escalationLevel === 2;
+		});
+		expect(triageEvent).toBeDefined();
+		expect(triageEvent?.eventType).toBe("custom");
+		expect(triageEvent?.level).toBe("warn");
+
+		const triageData = JSON.parse(triageEvent?.data ?? "{}") as Record<string, unknown>;
+		expect(triageData.verdict).toBe("extend");
+	});
+
+	test("escalation level 3 (terminate) records event with level=error", async () => {
+		const staleActivity = new Date(Date.now() - 60_000).toISOString();
+		const stalledSince = new Date(Date.now() - 200_000).toISOString();
+		const session = makeSession({
+			agentName: "doomed-agent",
+			tmuxSession: "overstory-doomed-agent",
+			state: "stalled",
+			lastActivity: staleActivity,
+			escalationLevel: 2,
+			stalledSince,
+		});
+
+		writeSessionsToStore(tempRoot, [session]);
+
+		const eventsDbPath = join(tempRoot, ".overstory", "events.db");
+		const eventStore = createEventStore(eventsDbPath);
+
+		try {
+			await runDaemonTick({
+				root: tempRoot,
+				...THRESHOLDS,
+				nudgeIntervalMs: 60_000,
+				_tmux: tmuxWithLiveness({ "overstory-doomed-agent": true }),
+				_triage: triageAlways("extend"),
+				_nudge: nudgeTracker().nudge,
+				_eventStore: eventStore,
+			});
+		} finally {
+			eventStore.close();
+		}
+
+		const events = readEvents(tempRoot);
+		const terminateEvent = events.find((e) => {
+			if (!e.data) return false;
+			const data = JSON.parse(e.data) as Record<string, unknown>;
+			return data.type === "escalation" && data.escalationLevel === 3;
+		});
+		expect(terminateEvent).toBeDefined();
+		expect(terminateEvent?.eventType).toBe("custom");
+		expect(terminateEvent?.level).toBe("error");
+
+		const terminateData = JSON.parse(terminateEvent?.data ?? "{}") as Record<string, unknown>;
+		expect(terminateData.action).toBe("terminate");
+	});
+
+	test("run_id is included in events when current-run.txt exists", async () => {
+		const staleActivity = new Date(Date.now() - 60_000).toISOString();
+		const session = makeSession({
+			agentName: "stalled-agent",
+			tmuxSession: "overstory-stalled-agent",
+			state: "working",
+			lastActivity: staleActivity,
+		});
+
+		writeSessionsToStore(tempRoot, [session]);
+
+		// Write a current-run.txt
+		const runId = "run-2026-02-13T10-00-00-000Z";
+		await Bun.write(join(tempRoot, ".overstory", "current-run.txt"), runId);
+
+		const eventsDbPath = join(tempRoot, ".overstory", "events.db");
+		const eventStore = createEventStore(eventsDbPath);
+
+		try {
+			await runDaemonTick({
+				root: tempRoot,
+				...THRESHOLDS,
+				nudgeIntervalMs: 60_000,
+				_tmux: tmuxWithLiveness({ "overstory-stalled-agent": true }),
+				_triage: triageAlways("extend"),
+				_nudge: nudgeTracker().nudge,
+				_eventStore: eventStore,
+			});
+		} finally {
+			eventStore.close();
+		}
+
+		const events = readEvents(tempRoot);
+		expect(events.length).toBeGreaterThanOrEqual(1);
+		const event = events[0];
+		expect(event?.runId).toBe(runId);
+	});
+
+	test("daemon continues normally when _eventStore is null", async () => {
+		const staleActivity = new Date(Date.now() - 60_000).toISOString();
+		const session = makeSession({
+			agentName: "stalled-agent",
+			tmuxSession: "overstory-stalled-agent",
+			state: "working",
+			lastActivity: staleActivity,
+		});
+
+		writeSessionsToStore(tempRoot, [session]);
+
+		const checks: HealthCheck[] = [];
+
+		// Inject null EventStore — daemon should still work fine
+		await runDaemonTick({
+			root: tempRoot,
+			...THRESHOLDS,
+			nudgeIntervalMs: 60_000,
+			onHealthCheck: (c) => checks.push(c),
+			_tmux: tmuxWithLiveness({ "overstory-stalled-agent": true }),
+			_triage: triageAlways("extend"),
+			_nudge: nudgeTracker().nudge,
+			_eventStore: null,
+		});
+
+		// Daemon should still produce health checks even without EventStore
+		expect(checks).toHaveLength(1);
+		expect(checks[0]?.action).toBe("escalate");
 	});
 });

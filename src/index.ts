@@ -8,7 +8,9 @@
 
 import { cleanCommand } from "./commands/clean.ts";
 import { coordinatorCommand } from "./commands/coordinator.ts";
+import { costsCommand } from "./commands/costs.ts";
 import { dashboardCommand } from "./commands/dashboard.ts";
+import { errorsCommand } from "./commands/errors.ts";
 import { groupCommand } from "./commands/group.ts";
 import { hooksCommand } from "./commands/hooks.ts";
 import { initCommand } from "./commands/init.ts";
@@ -19,6 +21,7 @@ import { metricsCommand } from "./commands/metrics.ts";
 import { monitorCommand } from "./commands/monitor.ts";
 import { nudgeCommand } from "./commands/nudge.ts";
 import { primeCommand } from "./commands/prime.ts";
+import { replayCommand } from "./commands/replay.ts";
 import { runCommand } from "./commands/run.ts";
 import { slingCommand } from "./commands/sling.ts";
 import { specCommand } from "./commands/spec.ts";
@@ -55,7 +58,10 @@ Commands:
   log <event>             Log a hook event
   watch                   Start watchdog daemon
   trace <target>         Chronological event timeline for agent/bead
+  errors [options]        Aggregated error view across agents
   run [sub]               Manage runs (list/show/complete)
+  replay [options]        Interleaved chronological replay across agents
+  costs [options]          Token/cost analysis and breakdown
   metrics                 Show session metrics
 
 Options:
@@ -84,7 +90,10 @@ const COMMANDS = [
 	"log",
 	"watch",
 	"trace",
+	"errors",
+	"replay",
 	"run",
+	"costs",
 	"metrics",
 ];
 
@@ -194,8 +203,17 @@ async function main(): Promise<void> {
 		case "trace":
 			await traceCommand(commandArgs);
 			break;
+		case "errors":
+			await errorsCommand(commandArgs);
+			break;
+		case "replay":
+			await replayCommand(commandArgs);
+			break;
 		case "run":
 			await runCommand(commandArgs);
+			break;
+		case "costs":
+			await costsCommand(commandArgs);
 			break;
 		case "metrics":
 			await metricsCommand(commandArgs);

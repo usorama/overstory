@@ -9,8 +9,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createEventStore } from "../events/store.ts";
 import { createMailClient } from "../mail/client.ts";
 import { createMailStore } from "../mail/store.ts";
+import type { StoredEvent } from "../types.ts";
 import { mailCommand } from "./mail.ts";
 
 describe("mailCommand", () => {
@@ -393,6 +395,120 @@ describe("mailCommand", () => {
 			const parsed = JSON.parse(output.trim());
 			expect(parsed.id).toBeTruthy();
 			expect(output).not.toContain("Queued nudge");
+		});
+	});
+
+	describe("mail_sent event recording", () => {
+		test("mail send records mail_sent event to events.db", async () => {
+			await mailCommand([
+				"send",
+				"--to",
+				"builder-1",
+				"--subject",
+				"Test event",
+				"--body",
+				"Check events",
+			]);
+
+			// Verify event was recorded
+			const eventsDbPath = join(tempDir, ".overstory", "events.db");
+			const store = createEventStore(eventsDbPath);
+			try {
+				const events: StoredEvent[] = store.getTimeline({
+					since: "2000-01-01T00:00:00Z",
+				});
+				const mailEvent = events.find((e) => e.eventType === "mail_sent");
+				expect(mailEvent).toBeDefined();
+				expect(mailEvent?.level).toBe("info");
+				expect(mailEvent?.agentName).toBe("orchestrator");
+
+				const data = JSON.parse(mailEvent?.data ?? "{}") as Record<string, unknown>;
+				expect(data.to).toBe("builder-1");
+				expect(data.subject).toBe("Test event");
+				expect(data.type).toBe("status");
+				expect(data.priority).toBe("normal");
+				expect(data.messageId).toBeTruthy();
+			} finally {
+				store.close();
+			}
+		});
+
+		test("mail send with custom --from records correct agentName", async () => {
+			await mailCommand([
+				"send",
+				"--to",
+				"orchestrator",
+				"--subject",
+				"Done",
+				"--body",
+				"Finished task",
+				"--from",
+				"builder-1",
+				"--type",
+				"worker_done",
+			]);
+
+			const eventsDbPath = join(tempDir, ".overstory", "events.db");
+			const store = createEventStore(eventsDbPath);
+			try {
+				const events: StoredEvent[] = store.getTimeline({
+					since: "2000-01-01T00:00:00Z",
+				});
+				const mailEvent = events.find((e) => e.eventType === "mail_sent");
+				expect(mailEvent).toBeDefined();
+				expect(mailEvent?.agentName).toBe("builder-1");
+
+				const data = JSON.parse(mailEvent?.data ?? "{}") as Record<string, unknown>;
+				expect(data.to).toBe("orchestrator");
+				expect(data.type).toBe("worker_done");
+			} finally {
+				store.close();
+			}
+		});
+
+		test("mail send includes run_id when current-run.txt exists", async () => {
+			const runId = "run-test-mail-456";
+			await Bun.write(join(tempDir, ".overstory", "current-run.txt"), runId);
+
+			await mailCommand([
+				"send",
+				"--to",
+				"builder-1",
+				"--subject",
+				"With run ID",
+				"--body",
+				"Test",
+			]);
+
+			const eventsDbPath = join(tempDir, ".overstory", "events.db");
+			const store = createEventStore(eventsDbPath);
+			try {
+				const events: StoredEvent[] = store.getTimeline({
+					since: "2000-01-01T00:00:00Z",
+				});
+				const mailEvent = events.find((e) => e.eventType === "mail_sent");
+				expect(mailEvent).toBeDefined();
+				expect(mailEvent?.runId).toBe(runId);
+			} finally {
+				store.close();
+			}
+		});
+
+		test("mail send without current-run.txt records null runId", async () => {
+			await mailCommand(["send", "--to", "builder-1", "--subject", "No run", "--body", "Test"]);
+
+			const eventsDbPath = join(tempDir, ".overstory", "events.db");
+			const store = createEventStore(eventsDbPath);
+			try {
+				const events: StoredEvent[] = store.getTimeline({
+					since: "2000-01-01T00:00:00Z",
+				});
+				const mailEvent = events.find((e) => e.eventType === "mail_sent");
+				expect(mailEvent).toBeDefined();
+				expect(mailEvent?.runId).toBeNull();
+			} finally {
+				store.close();
+			}
 		});
 	});
 });

@@ -11,7 +11,9 @@
 
 import { join } from "node:path";
 import { AgentError, ValidationError } from "../errors.ts";
+import { createEventStore } from "../events/store.ts";
 import { openSessionStore } from "../sessions/compat.ts";
+import type { EventStore } from "../types.ts";
 import { isSessionAlive, sendKeys } from "../worktree/tmux.ts";
 
 const DEFAULT_MESSAGE = "Check your mail inbox for new messages.";
@@ -177,6 +179,59 @@ async function sendNudgeWithRetry(tmuxSession: string, message: string): Promise
 }
 
 /**
+ * Read the current run ID from current-run.txt, or null if no active run.
+ */
+async function readCurrentRunId(overstoryDir: string): Promise<string | null> {
+	const path = join(overstoryDir, "current-run.txt");
+	const file = Bun.file(path);
+	if (!(await file.exists())) {
+		return null;
+	}
+	try {
+		const text = await file.text();
+		const trimmed = text.trim();
+		return trimmed.length > 0 ? trimmed : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Fire-and-forget: record a nudge event to EventStore. Never throws.
+ */
+function recordNudgeEvent(
+	eventStore: EventStore,
+	opts: {
+		runId: string | null;
+		agentName: string;
+		from: string;
+		message: string;
+		delivered: boolean;
+	},
+): void {
+	try {
+		eventStore.insert({
+			runId: opts.runId,
+			agentName: opts.agentName,
+			sessionId: null,
+			eventType: "custom",
+			toolName: null,
+			toolArgs: null,
+			toolDurationMs: null,
+			level: "info",
+			data: JSON.stringify({
+				type: "nudge",
+				from: opts.from,
+				message: opts.message,
+				delivered: opts.delivered,
+			}),
+		});
+	} catch {
+		// Fire-and-forget: event recording must never break nudge delivery
+	}
+}
+
+/**
  * Core nudge function. Exported for use by mail send auto-nudge.
  *
  * @param projectRoot - Absolute path to the project root
@@ -191,40 +246,72 @@ export async function nudgeAgent(
 	message: string = DEFAULT_MESSAGE,
 	force = false,
 ): Promise<{ delivered: boolean; reason?: string }> {
+	let result: { delivered: boolean; reason?: string };
+
 	// Resolve tmux session (SessionStore for agents, orchestrator-tmux.json for orchestrator)
 	const tmuxSessionName = await resolveTargetSession(projectRoot, agentName);
 
 	if (!tmuxSessionName) {
-		return { delivered: false, reason: `No active session for agent "${agentName}"` };
-	}
+		result = { delivered: false, reason: `No active session for agent "${agentName}"` };
+	} else {
+		// Check debounce (unless forced)
+		let debounced = false;
+		if (!force) {
+			const statePath = join(projectRoot, ".overstory", "nudge-state.json");
+			debounced = await isDebounced(statePath, agentName);
+		}
 
-	// Check debounce (unless forced)
-	if (!force) {
-		const statePath = join(projectRoot, ".overstory", "nudge-state.json");
-		const debounced = await isDebounced(statePath, agentName);
 		if (debounced) {
-			return { delivered: false, reason: "Debounced: nudge sent too recently" };
+			result = { delivered: false, reason: "Debounced: nudge sent too recently" };
+		} else {
+			// Verify tmux session is alive
+			const alive = await isSessionAlive(tmuxSessionName);
+			if (!alive) {
+				result = {
+					delivered: false,
+					reason: `Tmux session "${tmuxSessionName}" is not alive`,
+				};
+			} else {
+				// Send with retry
+				const delivered = await sendNudgeWithRetry(tmuxSessionName, message);
+
+				if (delivered) {
+					// Record nudge for debounce tracking
+					const statePath = join(projectRoot, ".overstory", "nudge-state.json");
+					await recordNudge(statePath, agentName);
+					result = { delivered: true };
+				} else {
+					result = {
+						delivered: false,
+						reason: `Failed to send after ${MAX_RETRIES} attempts`,
+					};
+				}
+			}
 		}
 	}
 
-	// Verify tmux session is alive
-	const alive = await isSessionAlive(tmuxSessionName);
-	if (!alive) {
-		return { delivered: false, reason: `Tmux session "${tmuxSessionName}" is not alive` };
+	// Record event to EventStore (fire-and-forget)
+	try {
+		const overstoryDir = join(projectRoot, ".overstory");
+		const eventsDbPath = join(overstoryDir, "events.db");
+		const eventStore = createEventStore(eventsDbPath);
+		try {
+			const runId = await readCurrentRunId(overstoryDir);
+			recordNudgeEvent(eventStore, {
+				runId,
+				agentName,
+				from: "orchestrator",
+				message,
+				delivered: result.delivered,
+			});
+		} finally {
+			eventStore.close();
+		}
+	} catch {
+		// Event recording failure is non-fatal
 	}
 
-	// Send with retry
-	const delivered = await sendNudgeWithRetry(tmuxSessionName, message);
-
-	if (delivered) {
-		// Record nudge for debounce tracking
-		const statePath = join(projectRoot, ".overstory", "nudge-state.json");
-		await recordNudge(statePath, agentName);
-	}
-
-	return delivered
-		? { delivered: true }
-		: { delivered: false, reason: `Failed to send after ${MAX_RETRIES} attempts` };
+	return result;
 }
 
 /**

@@ -1,0 +1,775 @@
+/**
+ * Tests for `overstory costs` command.
+ *
+ * Uses real bun:sqlite (temp files) to test the costs command end-to-end.
+ * Captures process.stdout.write to verify output formatting.
+ *
+ * Real implementations used for: filesystem (temp dirs), SQLite (MetricsStore,
+ * SessionStore). No mocks needed -- all dependencies are cheap and local.
+ */
+
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ValidationError } from "../errors.ts";
+import { createMetricsStore } from "../metrics/store.ts";
+import { createSessionStore } from "../sessions/store.ts";
+import type { SessionMetrics } from "../types.ts";
+import { costsCommand } from "./costs.ts";
+
+/** Helper to create a SessionMetrics with sensible defaults. */
+function makeMetrics(overrides: Partial<SessionMetrics> = {}): SessionMetrics {
+	return {
+		agentName: "builder-1",
+		beadId: "task-001",
+		capability: "builder",
+		startedAt: new Date().toISOString(),
+		completedAt: new Date().toISOString(),
+		durationMs: 60000,
+		exitCode: 0,
+		mergeResult: null,
+		parentAgent: null,
+		inputTokens: 12345,
+		outputTokens: 5678,
+		cacheReadTokens: 8000,
+		cacheCreationTokens: 901,
+		estimatedCostUsd: 0.42,
+		modelUsed: "claude-sonnet-4-20250514",
+		...overrides,
+	};
+}
+
+describe("costsCommand", () => {
+	let chunks: string[];
+	let originalWrite: typeof process.stdout.write;
+	let tempDir: string;
+	let originalCwd: string;
+
+	beforeEach(async () => {
+		// Spy on stdout
+		chunks = [];
+		originalWrite = process.stdout.write;
+		process.stdout.write = ((chunk: string) => {
+			chunks.push(chunk);
+			return true;
+		}) as typeof process.stdout.write;
+
+		// Create temp dir with .overstory/config.yaml structure
+		tempDir = await mkdtemp(join(tmpdir(), "costs-test-"));
+		const overstoryDir = join(tempDir, ".overstory");
+		await Bun.write(
+			join(overstoryDir, "config.yaml"),
+			`project:\n  name: test\n  root: ${tempDir}\n  canonicalBranch: main\n`,
+		);
+
+		// Change to temp dir so loadConfig() works
+		originalCwd = process.cwd();
+		process.chdir(tempDir);
+	});
+
+	afterEach(async () => {
+		process.stdout.write = originalWrite;
+		process.chdir(originalCwd);
+		await rm(tempDir, { recursive: true, force: true });
+	});
+
+	function output(): string {
+		return chunks.join("");
+	}
+
+	// === Help flag ===
+
+	describe("help flag", () => {
+		test("--help shows help text", async () => {
+			await costsCommand(["--help"]);
+			const out = output();
+
+			expect(out).toContain("overstory costs");
+			expect(out).toContain("--agent");
+			expect(out).toContain("--run");
+			expect(out).toContain("--by-capability");
+			expect(out).toContain("--last");
+			expect(out).toContain("--json");
+		});
+
+		test("-h shows help text", async () => {
+			await costsCommand(["-h"]);
+			const out = output();
+
+			expect(out).toContain("overstory costs");
+		});
+	});
+
+	// === Missing metrics.db (graceful handling) ===
+
+	describe("missing metrics.db", () => {
+		test("text mode outputs friendly message when no metrics.db exists", async () => {
+			await costsCommand([]);
+			const out = output();
+
+			expect(out).toBe("No metrics data yet.\n");
+		});
+
+		test("JSON mode outputs empty array when no metrics.db exists", async () => {
+			await costsCommand(["--json"]);
+			const out = output();
+
+			expect(out).toBe("[]\n");
+		});
+	});
+
+	// === Argument validation ===
+
+	describe("argument validation", () => {
+		test("--last with non-numeric value throws ValidationError", async () => {
+			await expect(costsCommand(["--last", "abc"])).rejects.toThrow(ValidationError);
+		});
+
+		test("--last with zero throws ValidationError", async () => {
+			await expect(costsCommand(["--last", "0"])).rejects.toThrow(ValidationError);
+		});
+
+		test("--last with negative value throws ValidationError", async () => {
+			await expect(costsCommand(["--last", "-5"])).rejects.toThrow(ValidationError);
+		});
+	});
+
+	// === JSON output mode ===
+
+	describe("JSON output mode", () => {
+		test("outputs valid JSON array with sessions", async () => {
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			store.recordSession(makeMetrics({ agentName: "builder-1", beadId: "t1" }));
+			store.recordSession(makeMetrics({ agentName: "scout-1", beadId: "t2", capability: "scout" }));
+			store.close();
+
+			await costsCommand(["--json"]);
+			const out = output();
+
+			const parsed = JSON.parse(out.trim()) as unknown[];
+			expect(Array.isArray(parsed)).toBe(true);
+			expect(parsed).toHaveLength(2);
+		});
+
+		test("JSON output includes expected token fields", async () => {
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			store.recordSession(
+				makeMetrics({
+					agentName: "builder-1",
+					beadId: "t1",
+					inputTokens: 100,
+					outputTokens: 50,
+					cacheReadTokens: 30,
+					cacheCreationTokens: 10,
+					estimatedCostUsd: 0.15,
+				}),
+			);
+			store.close();
+
+			await costsCommand(["--json"]);
+			const out = output();
+
+			const parsed = JSON.parse(out.trim()) as Record<string, unknown>[];
+			expect(parsed).toHaveLength(1);
+			const session = parsed[0];
+			expect(session).toBeDefined();
+			expect(session?.inputTokens).toBe(100);
+			expect(session?.outputTokens).toBe(50);
+			expect(session?.cacheReadTokens).toBe(30);
+			expect(session?.cacheCreationTokens).toBe(10);
+			expect(session?.estimatedCostUsd).toBe(0.15);
+		});
+
+		test("JSON output returns empty array when no sessions match", async () => {
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			store.recordSession(makeMetrics({ agentName: "builder-1", beadId: "t1" }));
+			store.close();
+
+			await costsCommand(["--json", "--agent", "nonexistent"]);
+			const out = output();
+
+			const parsed = JSON.parse(out.trim()) as unknown[];
+			expect(parsed).toEqual([]);
+		});
+
+		test("JSON --by-capability outputs grouped object", async () => {
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			store.recordSession(
+				makeMetrics({
+					agentName: "builder-1",
+					beadId: "t1",
+					capability: "builder",
+					inputTokens: 100,
+				}),
+			);
+			store.recordSession(
+				makeMetrics({
+					agentName: "scout-1",
+					beadId: "t2",
+					capability: "scout",
+					inputTokens: 50,
+				}),
+			);
+			store.close();
+
+			await costsCommand(["--json", "--by-capability"]);
+			const out = output();
+
+			const parsed = JSON.parse(out.trim()) as Record<string, unknown>;
+			expect(parsed).toBeDefined();
+			expect(parsed.builder).toBeDefined();
+			expect(parsed.scout).toBeDefined();
+
+			const builderGroup = parsed.builder as Record<string, unknown>;
+			expect(builderGroup.sessions).toBeDefined();
+			expect(builderGroup.totals).toBeDefined();
+		});
+	});
+
+	// === Human output format ===
+
+	describe("human output format", () => {
+		test("shows Cost Summary header", async () => {
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			store.recordSession(makeMetrics({ agentName: "builder-1", beadId: "t1" }));
+			store.close();
+
+			await costsCommand([]);
+			const out = output();
+
+			expect(out).toContain("Cost Summary");
+		});
+
+		test("shows column headers", async () => {
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			store.recordSession(makeMetrics({ agentName: "builder-1", beadId: "t1" }));
+			store.close();
+
+			await costsCommand([]);
+			const out = output();
+
+			expect(out).toContain("Agent");
+			expect(out).toContain("Capability");
+			expect(out).toContain("Input");
+			expect(out).toContain("Output");
+			expect(out).toContain("Cache");
+			expect(out).toContain("Cost");
+		});
+
+		test("shows agent name and capability in output", async () => {
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			store.recordSession(
+				makeMetrics({
+					agentName: "builder-1",
+					beadId: "t1",
+					capability: "builder",
+				}),
+			);
+			store.close();
+
+			await costsCommand([]);
+			const out = output();
+
+			expect(out).toContain("builder-1");
+			expect(out).toContain("builder");
+		});
+
+		test("shows separator line", async () => {
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			store.recordSession(makeMetrics({ agentName: "builder-1", beadId: "t1" }));
+			store.close();
+
+			await costsCommand([]);
+			const out = output();
+
+			expect(out).toContain("=".repeat(70));
+		});
+
+		test("shows Total row", async () => {
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			store.recordSession(makeMetrics({ agentName: "builder-1", beadId: "t1" }));
+			store.close();
+
+			await costsCommand([]);
+			const out = output();
+
+			expect(out).toContain("Total");
+		});
+
+		test("no sessions shows 'No session data found' message", async () => {
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			// Create DB but don't insert anything
+			store.close();
+
+			await costsCommand([]);
+			const out = output();
+
+			expect(out).toContain("No session data found");
+		});
+	});
+
+	// === Number formatting ===
+
+	describe("number formatting", () => {
+		test("formats numbers with thousands separators", async () => {
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			store.recordSession(
+				makeMetrics({
+					agentName: "builder-1",
+					beadId: "t1",
+					inputTokens: 12345,
+					outputTokens: 5678,
+				}),
+			);
+			store.close();
+
+			await costsCommand([]);
+			const out = output();
+
+			expect(out).toContain("12,345");
+			expect(out).toContain("5,678");
+		});
+
+		test("formats cost with dollar sign and 2 decimal places", async () => {
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			store.recordSession(
+				makeMetrics({
+					agentName: "builder-1",
+					beadId: "t1",
+					estimatedCostUsd: 0.42,
+				}),
+			);
+			store.close();
+
+			await costsCommand([]);
+			const out = output();
+
+			expect(out).toContain("$0.42");
+		});
+
+		test("handles zero tokens correctly", async () => {
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			store.recordSession(
+				makeMetrics({
+					agentName: "builder-1",
+					beadId: "t1",
+					inputTokens: 0,
+					outputTokens: 0,
+					cacheReadTokens: 0,
+					cacheCreationTokens: 0,
+					estimatedCostUsd: 0,
+				}),
+			);
+			store.close();
+
+			await costsCommand([]);
+			const out = output();
+
+			expect(out).toContain("$0.00");
+		});
+
+		test("handles null cost correctly", async () => {
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			store.recordSession(
+				makeMetrics({
+					agentName: "builder-1",
+					beadId: "t1",
+					estimatedCostUsd: null,
+				}),
+			);
+			store.close();
+
+			await costsCommand([]);
+			const out = output();
+
+			expect(out).toContain("$0.00");
+		});
+	});
+
+	// === --agent filter ===
+
+	describe("--agent filter", () => {
+		test("filters sessions by agent name", async () => {
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			store.recordSession(makeMetrics({ agentName: "builder-1", beadId: "t1", inputTokens: 100 }));
+			store.recordSession(makeMetrics({ agentName: "scout-1", beadId: "t2", inputTokens: 200 }));
+			store.close();
+
+			await costsCommand(["--json", "--agent", "builder-1"]);
+			const out = output();
+
+			const parsed = JSON.parse(out.trim()) as Record<string, unknown>[];
+			expect(parsed).toHaveLength(1);
+			expect(parsed[0]?.agentName).toBe("builder-1");
+		});
+
+		test("returns empty for non-existent agent", async () => {
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			store.recordSession(makeMetrics({ agentName: "builder-1", beadId: "t1" }));
+			store.close();
+
+			await costsCommand(["--json", "--agent", "nonexistent"]);
+			const out = output();
+
+			const parsed = JSON.parse(out.trim()) as unknown[];
+			expect(parsed).toEqual([]);
+		});
+	});
+
+	// === --run filter ===
+
+	describe("--run filter", () => {
+		test("filters sessions by run ID via SessionStore cross-reference", async () => {
+			const overstoryDir = join(tempDir, ".overstory");
+
+			// Create session store with run association
+			const sessDbPath = join(overstoryDir, "sessions.db");
+			const sessionStore = createSessionStore(sessDbPath);
+			sessionStore.upsert({
+				id: "sess-001",
+				agentName: "builder-1",
+				capability: "builder",
+				worktreePath: "/tmp/wt1",
+				branchName: "feat/task1",
+				beadId: "task-001",
+				tmuxSession: "tmux-001",
+				state: "completed",
+				pid: null,
+				parentAgent: null,
+				depth: 0,
+				runId: "run-2026-01-01",
+				startedAt: new Date().toISOString(),
+				lastActivity: new Date().toISOString(),
+				escalationLevel: 0,
+				stalledSince: null,
+			});
+			sessionStore.upsert({
+				id: "sess-002",
+				agentName: "scout-1",
+				capability: "scout",
+				worktreePath: "/tmp/wt2",
+				branchName: "feat/task2",
+				beadId: "task-002",
+				tmuxSession: "tmux-002",
+				state: "completed",
+				pid: null,
+				parentAgent: null,
+				depth: 0,
+				runId: "run-other",
+				startedAt: new Date().toISOString(),
+				lastActivity: new Date().toISOString(),
+				escalationLevel: 0,
+				stalledSince: null,
+			});
+			sessionStore.close();
+
+			// Create metrics store
+			const metricsDbPath = join(overstoryDir, "metrics.db");
+			const metricsStore = createMetricsStore(metricsDbPath);
+			metricsStore.recordSession(makeMetrics({ agentName: "builder-1", beadId: "task-001" }));
+			metricsStore.recordSession(
+				makeMetrics({ agentName: "scout-1", beadId: "task-002", capability: "scout" }),
+			);
+			metricsStore.close();
+
+			await costsCommand(["--json", "--run", "run-2026-01-01"]);
+			const out = output();
+
+			const parsed = JSON.parse(out.trim()) as Record<string, unknown>[];
+			expect(parsed).toHaveLength(1);
+			expect(parsed[0]?.agentName).toBe("builder-1");
+		});
+
+		test("returns empty when no sessions match run ID", async () => {
+			const overstoryDir = join(tempDir, ".overstory");
+
+			// Create empty session store
+			const sessDbPath = join(overstoryDir, "sessions.db");
+			const sessionStore = createSessionStore(sessDbPath);
+			sessionStore.close();
+
+			// Create metrics store with data
+			const metricsDbPath = join(overstoryDir, "metrics.db");
+			const metricsStore = createMetricsStore(metricsDbPath);
+			metricsStore.recordSession(makeMetrics({ agentName: "builder-1", beadId: "t1" }));
+			metricsStore.close();
+
+			await costsCommand(["--json", "--run", "run-nonexistent"]);
+			const out = output();
+
+			const parsed = JSON.parse(out.trim()) as unknown[];
+			expect(parsed).toEqual([]);
+		});
+	});
+
+	// === --by-capability grouping ===
+
+	describe("--by-capability grouping", () => {
+		test("shows capability header", async () => {
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			store.recordSession(
+				makeMetrics({ agentName: "builder-1", beadId: "t1", capability: "builder" }),
+			);
+			store.close();
+
+			await costsCommand(["--by-capability"]);
+			const out = output();
+
+			expect(out).toContain("Cost by Capability");
+		});
+
+		test("shows Sessions column header", async () => {
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			store.recordSession(
+				makeMetrics({ agentName: "builder-1", beadId: "t1", capability: "builder" }),
+			);
+			store.close();
+
+			await costsCommand(["--by-capability"]);
+			const out = output();
+
+			expect(out).toContain("Sessions");
+		});
+
+		test("groups multiple sessions by capability", async () => {
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			store.recordSession(
+				makeMetrics({
+					agentName: "builder-1",
+					beadId: "t1",
+					capability: "builder",
+					inputTokens: 1000,
+				}),
+			);
+			store.recordSession(
+				makeMetrics({
+					agentName: "builder-2",
+					beadId: "t2",
+					capability: "builder",
+					inputTokens: 2000,
+				}),
+			);
+			store.recordSession(
+				makeMetrics({
+					agentName: "scout-1",
+					beadId: "t3",
+					capability: "scout",
+					inputTokens: 500,
+				}),
+			);
+			store.close();
+
+			await costsCommand(["--by-capability"]);
+			const out = output();
+
+			expect(out).toContain("builder");
+			expect(out).toContain("scout");
+			expect(out).toContain("Total");
+		});
+
+		test("shows correct session count per capability", async () => {
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			store.recordSession(makeMetrics({ agentName: "b1", beadId: "t1", capability: "builder" }));
+			store.recordSession(makeMetrics({ agentName: "b2", beadId: "t2", capability: "builder" }));
+			store.recordSession(makeMetrics({ agentName: "b3", beadId: "t3", capability: "builder" }));
+			store.recordSession(makeMetrics({ agentName: "s1", beadId: "t4", capability: "scout" }));
+			store.close();
+
+			await costsCommand(["--json", "--by-capability"]);
+			const out = output();
+
+			const parsed = JSON.parse(out.trim()) as Record<
+				string,
+				{ sessions: unknown[]; totals: Record<string, unknown> }
+			>;
+			expect(parsed.builder?.sessions).toHaveLength(3);
+			expect(parsed.scout?.sessions).toHaveLength(1);
+		});
+
+		test("empty data shows no session data message", async () => {
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			store.close();
+
+			await costsCommand(["--by-capability"]);
+			const out = output();
+
+			expect(out).toContain("No session data found");
+		});
+	});
+
+	// === --last flag ===
+
+	describe("--last flag", () => {
+		test("limits the number of sessions returned", async () => {
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			for (let i = 0; i < 10; i++) {
+				store.recordSession(makeMetrics({ agentName: `agent-${i}`, beadId: `t-${i}` }));
+			}
+			store.close();
+
+			await costsCommand(["--json", "--last", "3"]);
+			const out = output();
+
+			const parsed = JSON.parse(out.trim()) as unknown[];
+			expect(parsed).toHaveLength(3);
+		});
+
+		test("default limit is 20", async () => {
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			for (let i = 0; i < 25; i++) {
+				store.recordSession(makeMetrics({ agentName: `agent-${i}`, beadId: `t-${i}` }));
+			}
+			store.close();
+
+			await costsCommand(["--json"]);
+			const out = output();
+
+			const parsed = JSON.parse(out.trim()) as unknown[];
+			expect(parsed).toHaveLength(20);
+		});
+	});
+
+	// === Edge cases ===
+
+	describe("edge cases", () => {
+		test("handles session with all zero tokens", async () => {
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			store.recordSession(
+				makeMetrics({
+					agentName: "builder-1",
+					beadId: "t1",
+					inputTokens: 0,
+					outputTokens: 0,
+					cacheReadTokens: 0,
+					cacheCreationTokens: 0,
+					estimatedCostUsd: 0,
+				}),
+			);
+			store.close();
+
+			// Should not throw
+			await costsCommand([]);
+			const out = output();
+
+			expect(out).toContain("Cost Summary");
+			expect(out).toContain("builder-1");
+		});
+
+		test("handles session with null cost", async () => {
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			store.recordSession(
+				makeMetrics({
+					agentName: "builder-1",
+					beadId: "t1",
+					estimatedCostUsd: null,
+				}),
+			);
+			store.close();
+
+			// Should not throw
+			await costsCommand([]);
+			const out = output();
+
+			expect(out).toContain("Cost Summary");
+			expect(out).toContain("$0.00");
+		});
+
+		test("cache column sums cacheRead + cacheCreation tokens", async () => {
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			store.recordSession(
+				makeMetrics({
+					agentName: "builder-1",
+					beadId: "t1",
+					cacheReadTokens: 8000,
+					cacheCreationTokens: 901,
+				}),
+			);
+			store.close();
+
+			await costsCommand([]);
+			const out = output();
+
+			// 8000 + 901 = 8,901
+			expect(out).toContain("8,901");
+		});
+
+		test("total row sums across all sessions", async () => {
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			store.recordSession(
+				makeMetrics({
+					agentName: "builder-1",
+					beadId: "t1",
+					inputTokens: 100,
+					outputTokens: 50,
+					estimatedCostUsd: 0.1,
+				}),
+			);
+			store.recordSession(
+				makeMetrics({
+					agentName: "scout-1",
+					beadId: "t2",
+					capability: "scout",
+					inputTokens: 200,
+					outputTokens: 100,
+					estimatedCostUsd: 0.2,
+				}),
+			);
+			store.close();
+
+			await costsCommand(["--json"]);
+			const out = output();
+
+			const parsed = JSON.parse(out.trim()) as SessionMetrics[];
+			const totalInput = parsed.reduce((sum, s) => sum + s.inputTokens, 0);
+			const totalOutput = parsed.reduce((sum, s) => sum + s.outputTokens, 0);
+			expect(totalInput).toBe(300);
+			expect(totalOutput).toBe(150);
+		});
+
+		test("multiple flags work together", async () => {
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			store.recordSession(
+				makeMetrics({ agentName: "builder-1", beadId: "t1", capability: "builder" }),
+			);
+			store.recordSession(
+				makeMetrics({ agentName: "builder-2", beadId: "t2", capability: "builder" }),
+			);
+			store.close();
+
+			await costsCommand(["--by-capability", "--last", "10"]);
+			const out = output();
+
+			expect(out).toContain("Cost by Capability");
+			expect(out).toContain("builder");
+		});
+	});
+});
