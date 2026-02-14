@@ -28,6 +28,7 @@ import type { BeadIssue } from "../beads/client.ts";
 import { createBeadsClient } from "../beads/client.ts";
 import { loadConfig } from "../config.ts";
 import { AgentError, HierarchyError, ValidationError } from "../errors.ts";
+import { createMulchClient } from "../mulch/client.ts";
 import { openSessionStore } from "../sessions/compat.ts";
 import { createRunStore } from "../sessions/store.ts";
 import type { AgentSession, OverlayConfig } from "../types.ts";
@@ -349,6 +350,18 @@ export async function slingCommand(args: string[]): Promise<void> {
 		const agentDefPath = join(config.project.root, config.agents.baseDir, agentDef.file);
 		const baseDefinition = await Bun.file(agentDefPath).text();
 
+		// 8a. Fetch file-scoped mulch expertise if mulch is enabled and files are provided
+		let mulchExpertise: string | undefined;
+		if (config.mulch.enabled && fileScope.length > 0) {
+			try {
+				const mulch = createMulchClient(config.project.root);
+				mulchExpertise = await mulch.prime(undefined, undefined, { files: fileScope });
+			} catch {
+				// Non-fatal: mulch expertise is supplementary context
+				mulchExpertise = undefined;
+			}
+		}
+
 		const overlayConfig: OverlayConfig = {
 			agentName: name,
 			beadId: taskId,
@@ -362,6 +375,7 @@ export async function slingCommand(args: string[]): Promise<void> {
 			canSpawn: agentDef.canSpawn,
 			capability,
 			baseDefinition,
+			mulchExpertise,
 		};
 
 		try {

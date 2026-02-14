@@ -251,6 +251,8 @@ export interface OverlayConfig {
 	capability: string;
 	/** Full content of the base agent definition file (Layer 1: role-specific HOW). */
 	baseDefinition: string;
+	/** Pre-fetched mulch expertise output to embed directly in the overlay. */
+	mulchExpertise?: string;
 }
 
 // === Merge Queue ===

@@ -34,6 +34,25 @@ function formatMulchDomains(domains: readonly string[]): string {
 	return `\`\`\`bash\nmulch prime ${domains.join(" ")}\n\`\`\``;
 }
 
+/**
+ * Format pre-fetched mulch expertise for embedding in the overlay.
+ * Returns empty string if no expertise was provided (omits the section entirely).
+ * When expertise IS provided, renders it under a 'Pre-loaded Expertise' heading
+ * with a brief intro explaining it was loaded at spawn time based on file scope.
+ */
+function formatMulchExpertise(expertise: string | undefined): string {
+	if (!expertise || expertise.trim().length === 0) {
+		return "";
+	}
+	return [
+		"### Pre-loaded Expertise",
+		"",
+		"The following expertise was automatically loaded at spawn time based on your file scope:",
+		"",
+		expertise,
+	].join("\n");
+}
+
 /** Capabilities that are read-only and should not get quality gates for commits/tests/lint. */
 const READ_ONLY_CAPABILITIES = new Set(["scout", "reviewer"]);
 
@@ -165,6 +184,7 @@ export async function generateOverlay(config: OverlayConfig): Promise<string> {
 		"{{DEPTH}}": String(config.depth),
 		"{{FILE_SCOPE}}": formatFileScope(config.fileScope),
 		"{{MULCH_DOMAINS}}": formatMulchDomains(config.mulchDomains),
+		"{{MULCH_EXPERTISE}}": formatMulchExpertise(config.mulchExpertise),
 		"{{CAN_SPAWN}}": formatCanSpawn(config),
 		"{{QUALITY_GATES}}": formatQualityGates(config),
 		"{{CONSTRAINTS}}": formatConstraints(config),

@@ -172,6 +172,40 @@ describe("generateOverlay", () => {
 		expect(output).not.toContain("}}");
 	});
 
+	test("includes pre-loaded expertise when mulchExpertise is provided", async () => {
+		const config = makeConfig({
+			mulchExpertise: "## architecture\n- Pattern: use singleton for config loader",
+		});
+		const output = await generateOverlay(config);
+
+		expect(output).toContain("### Pre-loaded Expertise");
+		expect(output).toContain("automatically loaded at spawn time");
+		expect(output).toContain("## architecture");
+		expect(output).toContain("Pattern: use singleton for config loader");
+	});
+
+	test("omits expertise section when mulchExpertise is undefined", async () => {
+		const config = makeConfig({ mulchExpertise: undefined });
+		const output = await generateOverlay(config);
+
+		expect(output).not.toContain("### Pre-loaded Expertise");
+		expect(output).not.toContain("automatically loaded at spawn time");
+	});
+
+	test("omits expertise section when mulchExpertise is empty string", async () => {
+		const config = makeConfig({ mulchExpertise: "" });
+		const output = await generateOverlay(config);
+
+		expect(output).not.toContain("### Pre-loaded Expertise");
+	});
+
+	test("omits expertise section when mulchExpertise is whitespace only", async () => {
+		const config = makeConfig({ mulchExpertise: "   \n\t  \n  " });
+		const output = await generateOverlay(config);
+
+		expect(output).not.toContain("### Pre-loaded Expertise");
+	});
+
 	test("builder capability includes full quality gates section", async () => {
 		const config = makeConfig({ capability: "builder" });
 		const output = await generateOverlay(config);

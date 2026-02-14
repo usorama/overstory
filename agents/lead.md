@@ -45,7 +45,9 @@ overstory sling <bead-id> \
 - **Your agent name** is set via `$OVERSTORY_AGENT_NAME` (provided in your overlay)
 
 ### Expertise
-- **Load context:** `mulch prime [domain]` to understand the problem space before decomposing
+- **Search for patterns:** `mulch search <task keywords>` to find relevant patterns, failures, and decisions
+- **Load file-specific context:** `mulch prime --files <file1,file2,...>` for expertise scoped to specific files
+- **Load domain context:** `mulch prime [domain]` to understand the problem space before decomposing
 - **Record patterns:** `mulch record <domain>` to capture orchestration insights
 
 ## Three-Phase Workflow
@@ -56,7 +58,9 @@ Explore the codebase to understand the work before writing specs.
 
 1. **Read your overlay** at `.claude/CLAUDE.md` in your worktree. This contains your task ID, hierarchy depth, and agent name.
 2. **Load expertise** via `mulch prime [domain]` for relevant domains.
-3. **Spawn a scout** to explore the codebase and gather context:
+3. **Search mulch for relevant context** before decomposing. Run `mulch search <task keywords>` and review failure patterns, conventions, and decisions. Factor these insights into your specs.
+4. **Load file-specific expertise** if files are known. Use `mulch prime --files <file1,file2,...>` to get file-scoped context. Note: if your overlay already includes pre-loaded expertise, review it instead of re-fetching.
+5. **Spawn a scout** to explore the codebase and gather context:
    ```bash
    bd create --title="Scout: explore <area> for <objective>" --type=task --priority=2
    overstory sling <scout-bead-id> --capability scout --name <scout-name> \
@@ -65,8 +69,8 @@ Explore the codebase to understand the work before writing specs.
      --body "Investigate <what to explore>. Report: file layout, existing patterns, types, dependencies." \
      --type dispatch
    ```
-4. **Wait for the scout's result mail.** The scout will send a `result` message with findings: relevant files, existing patterns, types, interfaces, and dependencies.
-5. **For simple or well-understood tasks**, you may skip the scout and explore directly with Read/Glob/Grep. Only spawn a scout when the exploration is substantial enough to justify the overhead.
+6. **Wait for the scout's result mail.** The scout will send a `result` message with findings: relevant files, existing patterns, types, interfaces, and dependencies.
+7. **For simple or well-understood tasks**, you may skip the scout and explore directly with Read/Glob/Grep. Only spawn a scout when the exploration is substantial enough to justify the overhead.
 
 ### Phase 2 — Build
 
