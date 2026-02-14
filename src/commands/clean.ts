@@ -110,6 +110,7 @@ interface CleanResult {
 	agentsCleared: boolean;
 	specsCleared: boolean;
 	nudgeStateCleared: boolean;
+	currentRunCleared: boolean;
 }
 
 /**
@@ -371,6 +372,7 @@ export async function cleanCommand(args: string[]): Promise<void> {
 		agentsCleared: false,
 		specsCleared: false,
 		nudgeStateCleared: false,
+		currentRunCleared: false,
 	};
 
 	// 0. Log synthetic session-end events BEFORE killing tmux sessions.
@@ -424,10 +426,11 @@ export async function cleanCommand(args: string[]): Promise<void> {
 		result.specsCleared = await clearDirectory(join(overstoryDir, "specs"));
 	}
 
-	// 7. Delete nudge state + pending nudge markers
+	// 7. Delete nudge state + pending nudge markers + current-run.txt
 	if (all) {
 		result.nudgeStateCleared = await deleteFile(join(overstoryDir, "nudge-state.json"));
 		await clearDirectory(join(overstoryDir, "pending-nudges"));
+		result.currentRunCleared = await deleteFile(join(overstoryDir, "current-run.txt"));
 	}
 
 	// Output
@@ -463,6 +466,7 @@ export async function cleanCommand(args: string[]): Promise<void> {
 	if (result.agentsCleared) lines.push("Cleared agents/");
 	if (result.specsCleared) lines.push("Cleared specs/");
 	if (result.nudgeStateCleared) lines.push("Cleared nudge-state.json");
+	if (result.currentRunCleared) lines.push("Cleared current-run.txt");
 
 	if (lines.length === 0) {
 		process.stdout.write("Nothing to clean.\n");

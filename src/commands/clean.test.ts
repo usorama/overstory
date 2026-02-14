@@ -238,6 +238,22 @@ describe("--all", () => {
 		expect(await Bun.file(nudgePath).exists()).toBe(false);
 		expect(stdoutOutput).toContain("Cleared nudge-state.json");
 	});
+
+	test("deletes current-run.txt", async () => {
+		const currentRunPath = join(overstoryDir, "current-run.txt");
+		await Bun.write(currentRunPath, "run-2026-02-13T10-00-00-000Z");
+
+		await cleanCommand(["--all"]);
+
+		expect(await Bun.file(currentRunPath).exists()).toBe(false);
+		expect(stdoutOutput).toContain("Cleared current-run.txt");
+	});
+
+	test("handles missing current-run.txt gracefully", async () => {
+		// current-run.txt does not exist — should not error
+		await cleanCommand(["--all"]);
+		expect(stdoutOutput).not.toContain("Cleared current-run.txt");
+	});
 });
 
 // === individual flags ===
@@ -379,6 +395,16 @@ describe("JSON output", () => {
 		await cleanCommand(["--all", "--json"]);
 		const result = JSON.parse(stdoutOutput);
 		expect(result).toHaveProperty("sessionEndEventsLogged");
+	});
+
+	test("--json includes currentRunCleared field", async () => {
+		const currentRunPath = join(overstoryDir, "current-run.txt");
+		await Bun.write(currentRunPath, "run-2026-02-13T10-00-00-000Z");
+
+		await cleanCommand(["--all", "--json"]);
+		const result = JSON.parse(stdoutOutput);
+		expect(result).toHaveProperty("currentRunCleared");
+		expect(result.currentRunCleared).toBe(true);
 	});
 });
 

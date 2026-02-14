@@ -3,14 +3,19 @@
  *
  * CRITICAL PATH. Orchestrates a full agent spawn:
  * 1. Load config + manifest
- * 2. Validate (name unique, depth limit, bead exists)
- * 3. Create worktree
- * 4. Generate + write overlay CLAUDE.md
- * 5. Generate + write hooks config
- * 6. Claim beads issue
- * 7. Create tmux session running claude
- * 8. Record session in SessionStore (sessions.db)
- * 9. Return AgentSession
+ * 2. Validate (depth limit, hierarchy)
+ * 3. Load manifest + validate capability
+ * 4. Resolve or create run_id (current-run.txt)
+ * 5. Check name uniqueness + concurrency limit
+ * 6. Validate bead exists
+ * 7. Create worktree
+ * 8. Generate + write overlay CLAUDE.md
+ * 9. Deploy hooks config
+ * 10. Claim beads issue
+ * 11. Create agent identity
+ * 12. Create tmux session running claude
+ * 13. Record session in SessionStore + increment run agent count
+ * 14. Return AgentSession
  */
 
 import { mkdir } from "node:fs/promises";
@@ -24,6 +29,7 @@ import { createBeadsClient } from "../beads/client.ts";
 import { loadConfig } from "../config.ts";
 import { AgentError, HierarchyError, ValidationError } from "../errors.ts";
 import { openSessionStore } from "../sessions/compat.ts";
+import { createRunStore } from "../sessions/store.ts";
 import type { AgentSession, OverlayConfig } from "../types.ts";
 import { createWorktree } from "../worktree/manager.ts";
 import { createSession, sendKeys } from "../worktree/tmux.ts";
@@ -257,8 +263,31 @@ export async function slingCommand(args: string[]): Promise<void> {
 		);
 	}
 
-	// 4. Check name uniqueness and concurrency limit against active sessions
+	// 4. Resolve or create run_id for this spawn
 	const overstoryDir = join(config.project.root, ".overstory");
+	const currentRunPath = join(overstoryDir, "current-run.txt");
+	let runId: string;
+
+	const currentRunFile = Bun.file(currentRunPath);
+	if (await currentRunFile.exists()) {
+		runId = (await currentRunFile.text()).trim();
+	} else {
+		runId = `run-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+		const runStore = createRunStore(join(overstoryDir, "sessions.db"));
+		try {
+			runStore.createRun({
+				id: runId,
+				startedAt: new Date().toISOString(),
+				coordinatorSessionId: null,
+				status: "active",
+			});
+		} finally {
+			runStore.close();
+		}
+		await Bun.write(currentRunPath, runId);
+	}
+
+	// 5. Check name uniqueness and concurrency limit against active sessions
 	const { store } = openSessionStore(overstoryDir);
 	try {
 		const activeSessions = store.getActive();
@@ -276,13 +305,13 @@ export async function slingCommand(args: string[]): Promise<void> {
 			});
 		}
 
-		// 4b. Enforce stagger delay between agent spawns
+		// 5b. Enforce stagger delay between agent spawns
 		const staggerMs = calculateStaggerDelay(config.agents.staggerDelayMs, activeSessions);
 		if (staggerMs > 0) {
 			await Bun.sleep(staggerMs);
 		}
 
-		// 5. Validate bead exists and is in a workable state (if beads enabled)
+		// 6. Validate bead exists and is in a workable state (if beads enabled)
 		const beads = createBeadsClient(config.project.root);
 		if (config.beads.enabled) {
 			let issue: BeadIssue;
@@ -304,7 +333,7 @@ export async function slingCommand(args: string[]): Promise<void> {
 			}
 		}
 
-		// 6. Create worktree
+		// 7. Create worktree
 		const worktreeBaseDir = join(config.project.root, config.worktrees.baseDir);
 		await mkdir(worktreeBaseDir, { recursive: true });
 
@@ -316,7 +345,7 @@ export async function slingCommand(args: string[]): Promise<void> {
 			beadId: taskId,
 		});
 
-		// 7. Generate + write overlay CLAUDE.md
+		// 8. Generate + write overlay CLAUDE.md
 		const agentDefPath = join(config.project.root, config.agents.baseDir, agentDef.file);
 		const baseDefinition = await Bun.file(agentDefPath).text();
 
@@ -338,7 +367,7 @@ export async function slingCommand(args: string[]): Promise<void> {
 		try {
 			await writeOverlay(worktreePath, overlayConfig, config.project.root);
 		} catch (err) {
-			// Clean up the orphaned worktree created in step 6 (overstory-p4st)
+			// Clean up the orphaned worktree created in step 7 (overstory-p4st)
 			try {
 				const cleanupProc = Bun.spawn(["git", "worktree", "remove", "--force", worktreePath], {
 					cwd: config.project.root,
@@ -352,10 +381,10 @@ export async function slingCommand(args: string[]): Promise<void> {
 			throw err;
 		}
 
-		// 8. Deploy hooks config (capability-specific guards)
+		// 9. Deploy hooks config (capability-specific guards)
 		await deployHooks(worktreePath, name, capability);
 
-		// 9. Claim beads issue
+		// 10. Claim beads issue
 		if (config.beads.enabled) {
 			try {
 				await beads.claim(taskId);
@@ -364,7 +393,7 @@ export async function slingCommand(args: string[]): Promise<void> {
 			}
 		}
 
-		// 10. Create agent identity (if new)
+		// 11. Create agent identity (if new)
 		const identityBaseDir = join(config.project.root, ".overstory", "agents");
 		const existingIdentity = await loadIdentity(identityBaseDir, name);
 		if (!existingIdentity) {
@@ -378,7 +407,7 @@ export async function slingCommand(args: string[]): Promise<void> {
 			});
 		}
 
-		// 11. Create tmux session running claude in interactive mode
+		// 12. Create tmux session running claude in interactive mode
 		const tmuxSessionName = `overstory-${config.project.name}-${name}`;
 		const claudeCmd = `claude --model ${agentDef.model} --dangerously-skip-permissions`;
 		const pid = await createSession(tmuxSessionName, worktreePath, claudeCmd, {
@@ -386,7 +415,7 @@ export async function slingCommand(args: string[]): Promise<void> {
 			OVERSTORY_WORKTREE_PATH: worktreePath,
 		});
 
-		// 12. Record session BEFORE sending the beacon so that hook-triggered
+		// 13. Record session BEFORE sending the beacon so that hook-triggered
 		// updateLastActivity() can find the entry and transition booting->working.
 		// Without this, a race exists: hooks fire before the session is persisted,
 		// leaving the agent stuck in "booting" (overstory-036f).
@@ -402,7 +431,7 @@ export async function slingCommand(args: string[]): Promise<void> {
 			pid,
 			parentAgent: parentAgent,
 			depth,
-			runId: null,
+			runId,
 			startedAt: new Date().toISOString(),
 			lastActivity: new Date().toISOString(),
 			escalationLevel: 0,
@@ -411,7 +440,15 @@ export async function slingCommand(args: string[]): Promise<void> {
 
 		store.upsert(session);
 
-		// 12b. Send beacon prompt via tmux send-keys
+		// Increment agent count for the run
+		const runStore = createRunStore(join(overstoryDir, "sessions.db"));
+		try {
+			runStore.incrementAgentCount(runId);
+		} finally {
+			runStore.close();
+		}
+
+		// 13b. Send beacon prompt via tmux send-keys
 		// Allow Claude Code time to initialize its TUI before sending input.
 		// 3s gives the TUI enough time to render and attach its input handler.
 		await Bun.sleep(3_000);
@@ -424,14 +461,14 @@ export async function slingCommand(args: string[]): Promise<void> {
 		});
 		await sendKeys(tmuxSessionName, beacon);
 
-		// 12c. Send a follow-up Enter after a short delay to ensure submission.
+		// 13c. Send a follow-up Enter after a short delay to ensure submission.
 		// Claude Code's TUI may consume the first Enter during initialization,
 		// leaving the beacon text visible but unsubmitted (overstory-yhv6).
 		// A redundant Enter on an empty input line is harmless.
 		await Bun.sleep(500);
 		await sendKeys(tmuxSessionName, "");
 
-		// 13. Output result
+		// 14. Output result
 		const output = {
 			agentName: name,
 			capability,
