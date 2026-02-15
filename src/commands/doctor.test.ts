@@ -19,7 +19,6 @@ import { doctorCommand } from "./doctor.ts";
 describe("doctorCommand", () => {
 	let chunks: string[];
 	let originalWrite: typeof process.stdout.write;
-	let originalExitCode: string | number | null | undefined;
 	let tempDir: string;
 	let originalCwd: string;
 
@@ -31,10 +30,6 @@ describe("doctorCommand", () => {
 			chunks.push(chunk);
 			return true;
 		}) as typeof process.stdout.write;
-
-		// Capture original exitCode
-		originalExitCode = process.exitCode;
-		process.exitCode = undefined;
 
 		// Create temp dir with .overstory/config.yaml structure
 		tempDir = await mkdtemp(join(tmpdir(), "doctor-test-"));
@@ -51,7 +46,6 @@ describe("doctorCommand", () => {
 
 	afterEach(async () => {
 		process.stdout.write = originalWrite;
-		process.exitCode = originalExitCode;
 		process.chdir(originalCwd);
 		await rm(tempDir, { recursive: true, force: true });
 	});
@@ -248,17 +242,14 @@ describe("doctorCommand", () => {
 	// === Exit code ===
 
 	describe("exit code", () => {
-		test("exit code is undefined when all checks pass or warn", async () => {
-			await doctorCommand([], { checkRunners: [] });
-			// All stubs return empty arrays, so no failures
-			expect(process.exitCode).toBeUndefined();
+		test("returns undefined when all checks pass or warn", async () => {
+			const exitCode = await doctorCommand([], { checkRunners: [] });
+			expect(exitCode).toBeUndefined();
 		});
 
-		test("exit code 0 on success (no failures)", async () => {
-			process.exitCode = undefined;
-			await doctorCommand([], { checkRunners: [] });
-			// Should remain undefined (not set to 1) when no failures
-			expect(process.exitCode).not.toBe(1);
+		test("returns undefined on success (no failures)", async () => {
+			const exitCode = await doctorCommand([], { checkRunners: [] });
+			expect(exitCode).toBeUndefined();
 		});
 	});
 

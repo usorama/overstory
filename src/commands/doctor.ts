@@ -163,11 +163,13 @@ export interface DoctorCommandOptions {
 
 /**
  * Entry point for `overstory doctor [--json] [--verbose] [--category <name>]`.
+ *
+ * @returns Exit code (1 if any check failed, undefined otherwise)
  */
 export async function doctorCommand(
 	args: string[],
 	options?: DoctorCommandOptions,
-): Promise<void> {
+): Promise<number | undefined> {
 	if (hasFlag(args, "--help") || hasFlag(args, "-h")) {
 		process.stdout.write(`${DOCTOR_HELP}\n`);
 		return;
@@ -215,9 +217,7 @@ export async function doctorCommand(
 		printHumanReadable(results, verbose, allChecks);
 	}
 
-	// Set exit code to 1 if any check failed
+	// Return exit code if any check failed
 	const hasFailures = results.some((c) => c.status === "fail");
-	if (hasFailures) {
-		process.exitCode = 1;
-	}
+	return hasFailures ? 1 : undefined;
 }

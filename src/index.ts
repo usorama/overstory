@@ -176,9 +176,13 @@ async function main(): Promise<void> {
 		case "clean":
 			await cleanCommand(commandArgs);
 			break;
-		case "doctor":
-			await doctorCommand(commandArgs);
+		case "doctor": {
+			const exitCode = await doctorCommand(commandArgs);
+			if (exitCode !== undefined) {
+				process.exitCode = exitCode;
+			}
 			break;
+		}
 		case "coordinator":
 			await coordinatorCommand(commandArgs);
 			break;
