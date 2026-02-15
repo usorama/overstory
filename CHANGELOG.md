@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-02-15
+
+### Added
+
+#### New CLI Commands
+- `overstory doctor` — comprehensive health check system with 9 check modules (dependencies, config, structure, databases, consistency, agents, merge-queue, version, logs) and formatted output with pass/warn/fail status
+- `overstory inspect <agent>` — deep per-agent inspection aggregating session data, metrics, events, and live tmux capture with `--follow` polling mode
+
+#### New Flags
+- `--watchdog` flag for `coordinator start` — auto-starts the watchdog daemon alongside the coordinator
+- `--debounce <ms>` flag for `mail check` — prevents excessive mail checking by skipping if called within the debounce window
+- PostToolUse hook entry for debounced mail checking
+
+#### Observability Improvements
+- Automated failure recording in watchdog via mulch — records failure patterns for future reference
+- Mulch learn extraction in `log session-end` — captures session insights automatically
+- Mulch health checks in `overstory clean` — validates mulch installation and domain health during cleanup
+
+#### Testing
+- Test suite grew from 1435 to 1612 tests across 66 files (3958 expect() calls)
+
+### Fixed
+
+- Wire doctor command into CLI router and update command groups
+
 ## [0.3.0] - 2026-02-13
 
 ### Added
@@ -167,7 +192,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Biome configuration for formatting and linting
 - TypeScript strict mode with `noUncheckedIndexedAccess`
 
-[Unreleased]: https://github.com/jayminwest/overstory/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/jayminwest/overstory/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/jayminwest/overstory/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jayminwest/overstory/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jayminwest/overstory/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jayminwest/overstory/releases/tag/v0.1.0

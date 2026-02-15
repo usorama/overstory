@@ -102,6 +102,7 @@ overstory init                          Initialize .overstory/ in current projec
 
 overstory coordinator start             Start persistent coordinator agent
   --attach / --no-attach                 TTY-aware tmux attach (default: auto)
+  --watchdog                             Auto-start watchdog daemon with coordinator
 overstory coordinator stop              Stop coordinator
 overstory coordinator status            Show coordinator state
 
@@ -143,6 +144,7 @@ overstory mail send                     Send a message
 
 overstory mail check                    Check inbox (unread messages)
   --agent <name>  --inject  --json
+  --debounce <ms>                        Skip if checked within window
 
 overstory mail list                     List messages with filters
   --from <name>  --to <name>  --unread
@@ -191,6 +193,38 @@ overstory clean                         Clean up worktrees, sessions, artifacts
   --all                                  Force remove all
   --run <id>                             Clean a specific run
 
+overstory doctor                        Run health checks on overstory setup
+  --json                                 JSON output
+  --category <name>                      Run a specific check category only
+
+overstory inspect <agent>               Deep per-agent inspection
+  --json                                 JSON output
+  --follow                               Polling mode (refreshes periodically)
+  --interval <ms>                        Refresh interval for --follow
+  --no-tmux                              Skip tmux capture
+  --limit <n>                            Limit events shown
+
+overstory spec write <bead-id>          Write a task specification
+  --body <content>                       Spec content (or pipe via stdin)
+
+overstory errors                        Aggregated error view across agents
+  --agent <name>                         Filter by agent
+  --run <id>                             Filter by run
+  --since <ts>  --until <ts>             Time range filter
+  --limit <n>  --json
+
+overstory replay                        Interleaved chronological replay
+  --run <id>                             Filter by run
+  --agent <name>                         Filter by agent(s)
+  --since <ts>  --until <ts>             Time range filter
+  --limit <n>  --json
+
+overstory costs                         Token/cost analysis and breakdown
+  --agent <name>                         Filter by agent
+  --run <id>                             Filter by run
+  --by-capability                        Group by capability type
+  --last <n>  --json
+
 overstory metrics                       Show session metrics
   --last <n>                             Last N sessions
   --json                                 JSON output
@@ -202,13 +236,13 @@ overstory metrics                       Show session metrics
 - **Dependencies**: Zero runtime dependencies — only Bun built-in APIs
 - **Database**: SQLite via `bun:sqlite` (WAL mode for concurrent access)
 - **Linting**: Biome (formatter + linter)
-- **Testing**: `bun test` (1435 tests across 55 files, colocated with source)
+- **Testing**: `bun test` (1612 tests across 66 files, colocated with source)
 - **External CLIs**: `bd` (beads), `mulch`, `git`, `tmux` — invoked as subprocesses
 
 ## Development
 
 ```bash
-# Run tests (1435 tests across 55 files)
+# Run tests (1612 tests across 66 files)
 bun test
 
 # Run a single test
@@ -248,7 +282,7 @@ overstory/
     types.ts                      Shared types and interfaces
     config.ts                     Config loader + validation
     errors.ts                     Custom error types
-    commands/                     One file per CLI subcommand (20 commands)
+    commands/                     One file per CLI subcommand (26 commands)
       coordinator.ts              Persistent orchestrator lifecycle
       supervisor.ts               Team lead management
       dashboard.ts                Live TUI dashboard (ANSI, zero deps)
@@ -268,6 +302,12 @@ overstory/
       run.ts                      Orchestration run lifecycle
       trace.ts                    Agent/bead timeline viewing
       clean.ts                    Worktree/session cleanup
+      doctor.ts                   Health check runner (9 check modules)
+      inspect.ts                  Deep per-agent inspection
+      spec.ts                     Task spec management
+      errors.ts                   Aggregated error view
+      replay.ts                   Interleaved event replay
+      costs.ts                    Token/cost analysis
       metrics.ts                  Session metrics
     agents/                       Agent lifecycle management
       manifest.ts                 Agent registry (load + query)
@@ -282,6 +322,7 @@ overstory/
     watchdog/                     Tiered health monitoring (daemon, triage, health)
     logging/                      Multi-format logger + sanitizer + reporter
     metrics/                      SQLite metrics + transcript parsing
+    doctor/                       Health check modules (9 checks)
     beads/                        bd CLI wrapper + molecules
     mulch/                        mulch CLI wrapper
     e2e/                          End-to-end lifecycle tests
