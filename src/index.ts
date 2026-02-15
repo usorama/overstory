@@ -10,6 +10,7 @@ import { cleanCommand } from "./commands/clean.ts";
 import { coordinatorCommand } from "./commands/coordinator.ts";
 import { costsCommand } from "./commands/costs.ts";
 import { dashboardCommand } from "./commands/dashboard.ts";
+import { doctorCommand } from "./commands/doctor.ts";
 import { errorsCommand } from "./commands/errors.ts";
 import { groupCommand } from "./commands/group.ts";
 import { hooksCommand } from "./commands/hooks.ts";
@@ -45,6 +46,7 @@ Commands:
   prime                   Load context for orchestrator/agent
   status                  Show all active agents and project state
   dashboard               Live TUI dashboard for agent monitoring
+  doctor                  Run health checks on overstory subsystems
   coordinator <sub>       Persistent coordinator agent (start/stop/status)
   supervisor <sub>        Per-project supervisor agent (start/stop/status)
   hooks <sub>             Manage orchestrator hooks (install/uninstall/status)
@@ -77,6 +79,7 @@ const COMMANDS = [
 	"prime",
 	"status",
 	"dashboard",
+	"doctor",
 	"clean",
 	"coordinator",
 	"supervisor",
@@ -163,6 +166,9 @@ async function main(): Promise<void> {
 			break;
 		case "dashboard":
 			await dashboardCommand(commandArgs);
+			break;
+		case "doctor":
+			await doctorCommand(commandArgs);
 			break;
 		case "clean":
 			await cleanCommand(commandArgs);
