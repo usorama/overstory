@@ -6,7 +6,7 @@
  */
 
 import { Database } from "bun:sqlite";
-import type { SessionMetrics } from "../types.ts";
+import type { SessionMetrics, TokenSnapshot } from "../types.ts";
 
 export interface MetricsStore {
 	recordSession(metrics: SessionMetrics): void;
@@ -15,6 +15,14 @@ export interface MetricsStore {
 	getAverageDuration(capability?: string): number;
 	/** Delete metrics matching the given criteria. Returns the number of rows deleted. */
 	purge(options: { all?: boolean; agent?: string }): number;
+	/** Record a token usage snapshot for a running agent. */
+	recordSnapshot(snapshot: TokenSnapshot): void;
+	/** Get the most recent snapshot per active agent (one row per agent). */
+	getLatestSnapshots(): TokenSnapshot[];
+	/** Get the timestamp of the most recent snapshot for an agent, or null. */
+	getLatestSnapshotTime(agentName: string): string | null;
+	/** Delete snapshots matching criteria. Returns number of rows deleted. */
+	purgeSnapshots(options: { all?: boolean; agent?: string; olderThanMs?: number }): number;
 	close(): void;
 }
 
@@ -37,6 +45,19 @@ interface SessionRow {
 	model_used: string | null;
 }
 
+/** Snapshot row shape as stored in SQLite (snake_case columns). */
+interface SnapshotRow {
+	id: number;
+	agent_name: string;
+	input_tokens: number;
+	output_tokens: number;
+	cache_read_tokens: number;
+	cache_creation_tokens: number;
+	estimated_cost_usd: number | null;
+	model_used: string | null;
+	created_at: string;
+}
+
 const CREATE_TABLE = `
 CREATE TABLE IF NOT EXISTS sessions (
   agent_name TEXT NOT NULL,
@@ -56,6 +77,24 @@ CREATE TABLE IF NOT EXISTS sessions (
   model_used TEXT,
   PRIMARY KEY (agent_name, bead_id)
 )`;
+
+const CREATE_SNAPSHOTS_TABLE = `
+CREATE TABLE IF NOT EXISTS token_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_name TEXT NOT NULL,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+  estimated_cost_usd REAL,
+  model_used TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now'))
+)`;
+
+const CREATE_SNAPSHOTS_INDEX = `
+CREATE INDEX IF NOT EXISTS idx_snapshots_agent_time
+  ON token_snapshots(agent_name, created_at)
+`;
 
 /** Token columns added in the token instrumentation migration. */
 const TOKEN_COLUMNS = [
@@ -103,6 +142,20 @@ function rowToMetrics(row: SessionRow): SessionMetrics {
 	};
 }
 
+/** Convert a database snapshot row (snake_case) to a TokenSnapshot object (camelCase). */
+function rowToSnapshot(row: SnapshotRow): TokenSnapshot {
+	return {
+		agentName: row.agent_name,
+		inputTokens: row.input_tokens,
+		outputTokens: row.output_tokens,
+		cacheReadTokens: row.cache_read_tokens,
+		cacheCreationTokens: row.cache_creation_tokens,
+		estimatedCostUsd: row.estimated_cost_usd,
+		modelUsed: row.model_used,
+		createdAt: row.created_at,
+	};
+}
+
 /**
  * Create a new MetricsStore backed by a SQLite database at the given path.
  *
@@ -119,6 +172,8 @@ export function createMetricsStore(dbPath: string): MetricsStore {
 
 	// Create schema
 	db.exec(CREATE_TABLE);
+	db.exec(CREATE_SNAPSHOTS_TABLE);
+	db.exec(CREATE_SNAPSHOTS_INDEX);
 
 	// Migrate: add token columns to existing tables that lack them
 	migrateTokenColumns(db);
@@ -168,6 +223,45 @@ export function createMetricsStore(dbPath: string): MetricsStore {
 	>(`
 		SELECT AVG(duration_ms) AS avg_duration FROM sessions
 		WHERE completed_at IS NOT NULL AND capability = $capability
+	`);
+
+	// Snapshot prepared statements
+	const insertSnapshotStmt = db.prepare<
+		void,
+		{
+			$agent_name: string;
+			$input_tokens: number;
+			$output_tokens: number;
+			$cache_read_tokens: number;
+			$cache_creation_tokens: number;
+			$estimated_cost_usd: number | null;
+			$model_used: string | null;
+			$created_at: string;
+		}
+	>(`
+		INSERT INTO token_snapshots
+			(agent_name, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, estimated_cost_usd, model_used, created_at)
+		VALUES
+			($agent_name, $input_tokens, $output_tokens, $cache_read_tokens, $cache_creation_tokens, $estimated_cost_usd, $model_used, $created_at)
+	`);
+
+	const latestSnapshotsStmt = db.prepare<SnapshotRow, Record<string, never>>(`
+		SELECT s.*
+		FROM token_snapshots s
+		INNER JOIN (
+			SELECT agent_name, MAX(created_at) as max_created_at
+			FROM token_snapshots
+			GROUP BY agent_name
+		) latest ON s.agent_name = latest.agent_name AND s.created_at = latest.max_created_at
+	`);
+
+	const latestSnapshotTimeStmt = db.prepare<
+		{ created_at: string } | null,
+		{ $agent_name: string }
+	>(`
+		SELECT MAX(created_at) as created_at
+		FROM token_snapshots
+		WHERE agent_name = $agent_name
 	`);
 
 	return {
@@ -229,6 +323,73 @@ export function createMetricsStore(dbPath: string): MetricsStore {
 				const count = countRow?.cnt ?? 0;
 				db.prepare<void, { $agent: string }>("DELETE FROM sessions WHERE agent_name = $agent").run({
 					$agent: options.agent,
+				});
+				return count;
+			}
+
+			return 0;
+		},
+
+		recordSnapshot(snapshot: TokenSnapshot): void {
+			insertSnapshotStmt.run({
+				$agent_name: snapshot.agentName,
+				$input_tokens: snapshot.inputTokens,
+				$output_tokens: snapshot.outputTokens,
+				$cache_read_tokens: snapshot.cacheReadTokens,
+				$cache_creation_tokens: snapshot.cacheCreationTokens,
+				$estimated_cost_usd: snapshot.estimatedCostUsd,
+				$model_used: snapshot.modelUsed,
+				$created_at: snapshot.createdAt,
+			});
+		},
+
+		getLatestSnapshots(): TokenSnapshot[] {
+			const rows = latestSnapshotsStmt.all({});
+			return rows.map(rowToSnapshot);
+		},
+
+		getLatestSnapshotTime(agentName: string): string | null {
+			const row = latestSnapshotTimeStmt.get({ $agent_name: agentName });
+			return row?.created_at ?? null;
+		},
+
+		purgeSnapshots(options: { all?: boolean; agent?: string; olderThanMs?: number }): number {
+			if (options.all) {
+				const countRow = db
+					.prepare<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM token_snapshots")
+					.get();
+				const count = countRow?.cnt ?? 0;
+				db.prepare("DELETE FROM token_snapshots").run();
+				return count;
+			}
+
+			if (options.agent !== undefined) {
+				const countRow = db
+					.prepare<{ cnt: number }, { $agent: string }>(
+						"SELECT COUNT(*) as cnt FROM token_snapshots WHERE agent_name = $agent",
+					)
+					.get({ $agent: options.agent });
+				const count = countRow?.cnt ?? 0;
+				db.prepare<void, { $agent: string }>(
+					"DELETE FROM token_snapshots WHERE agent_name = $agent",
+				).run({
+					$agent: options.agent,
+				});
+				return count;
+			}
+
+			if (options.olderThanMs !== undefined) {
+				const cutoffTime = new Date(Date.now() - options.olderThanMs).toISOString();
+				const countRow = db
+					.prepare<{ cnt: number }, { $cutoff: string }>(
+						"SELECT COUNT(*) as cnt FROM token_snapshots WHERE created_at < $cutoff",
+					)
+					.get({ $cutoff: cutoffTime });
+				const count = countRow?.cnt ?? 0;
+				db.prepare<void, { $cutoff: string }>(
+					"DELETE FROM token_snapshots WHERE created_at < $cutoff",
+				).run({
+					$cutoff: cutoffTime,
 				});
 				return count;
 			}

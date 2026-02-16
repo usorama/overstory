@@ -413,6 +413,225 @@ describe("purge", () => {
 	});
 });
 
+// === token snapshots ===
+
+describe("token snapshots", () => {
+	test("recordSnapshot inserts and can be retrieved via getLatestSnapshots", () => {
+		const snapshot = {
+			agentName: "test-agent",
+			inputTokens: 1000,
+			outputTokens: 500,
+			cacheReadTokens: 200,
+			cacheCreationTokens: 100,
+			estimatedCostUsd: 0.15,
+			modelUsed: "claude-sonnet-4-5",
+			createdAt: new Date().toISOString(),
+		};
+
+		store.recordSnapshot(snapshot);
+
+		const snapshots = store.getLatestSnapshots();
+		expect(snapshots).toHaveLength(1);
+		expect(snapshots[0]?.agentName).toBe("test-agent");
+		expect(snapshots[0]?.inputTokens).toBe(1000);
+		expect(snapshots[0]?.outputTokens).toBe(500);
+		expect(snapshots[0]?.estimatedCostUsd).toBeCloseTo(0.15, 2);
+	});
+
+	test("getLatestSnapshots returns one row per agent (the most recent)", () => {
+		const now = Date.now();
+		store.recordSnapshot({
+			agentName: "agent-a",
+			inputTokens: 100,
+			outputTokens: 50,
+			cacheReadTokens: 0,
+			cacheCreationTokens: 0,
+			estimatedCostUsd: 0.01,
+			modelUsed: "claude-sonnet-4-5",
+			createdAt: new Date(now - 60_000).toISOString(), // 1 min ago
+		});
+
+		store.recordSnapshot({
+			agentName: "agent-a",
+			inputTokens: 200,
+			outputTokens: 100,
+			cacheReadTokens: 0,
+			cacheCreationTokens: 0,
+			estimatedCostUsd: 0.02,
+			modelUsed: "claude-sonnet-4-5",
+			createdAt: new Date(now).toISOString(), // now (most recent)
+		});
+
+		store.recordSnapshot({
+			agentName: "agent-b",
+			inputTokens: 300,
+			outputTokens: 150,
+			cacheReadTokens: 0,
+			cacheCreationTokens: 0,
+			estimatedCostUsd: 0.03,
+			modelUsed: "claude-sonnet-4-5",
+			createdAt: new Date(now - 30_000).toISOString(), // 30s ago
+		});
+
+		const snapshots = store.getLatestSnapshots();
+		expect(snapshots).toHaveLength(2); // one per agent
+
+		const agentASnapshot = snapshots.find((s) => s.agentName === "agent-a");
+		const agentBSnapshot = snapshots.find((s) => s.agentName === "agent-b");
+
+		expect(agentASnapshot?.inputTokens).toBe(200); // most recent for agent-a
+		expect(agentBSnapshot?.inputTokens).toBe(300);
+	});
+
+	test("getLatestSnapshotTime returns the most recent timestamp for an agent", () => {
+		const now = Date.now();
+		const time1 = new Date(now - 60_000).toISOString();
+		const time2 = new Date(now).toISOString();
+
+		store.recordSnapshot({
+			agentName: "test-agent",
+			inputTokens: 100,
+			outputTokens: 50,
+			cacheReadTokens: 0,
+			cacheCreationTokens: 0,
+			estimatedCostUsd: null,
+			modelUsed: null,
+			createdAt: time1,
+		});
+
+		store.recordSnapshot({
+			agentName: "test-agent",
+			inputTokens: 200,
+			outputTokens: 100,
+			cacheReadTokens: 0,
+			cacheCreationTokens: 0,
+			estimatedCostUsd: null,
+			modelUsed: null,
+			createdAt: time2,
+		});
+
+		const latestTime = store.getLatestSnapshotTime("test-agent");
+		expect(latestTime).toBe(time2);
+	});
+
+	test("getLatestSnapshotTime returns null for unknown agent", () => {
+		const latestTime = store.getLatestSnapshotTime("unknown-agent");
+		expect(latestTime).toBeNull();
+	});
+
+	test("purgeSnapshots with all=true deletes everything", () => {
+		store.recordSnapshot({
+			agentName: "agent-a",
+			inputTokens: 100,
+			outputTokens: 50,
+			cacheReadTokens: 0,
+			cacheCreationTokens: 0,
+			estimatedCostUsd: null,
+			modelUsed: null,
+			createdAt: new Date().toISOString(),
+		});
+
+		store.recordSnapshot({
+			agentName: "agent-b",
+			inputTokens: 200,
+			outputTokens: 100,
+			cacheReadTokens: 0,
+			cacheCreationTokens: 0,
+			estimatedCostUsd: null,
+			modelUsed: null,
+			createdAt: new Date().toISOString(),
+		});
+
+		const count = store.purgeSnapshots({ all: true });
+		expect(count).toBe(2);
+		expect(store.getLatestSnapshots()).toEqual([]);
+	});
+
+	test("purgeSnapshots with agent filter deletes only that agent", () => {
+		store.recordSnapshot({
+			agentName: "agent-a",
+			inputTokens: 100,
+			outputTokens: 50,
+			cacheReadTokens: 0,
+			cacheCreationTokens: 0,
+			estimatedCostUsd: null,
+			modelUsed: null,
+			createdAt: new Date().toISOString(),
+		});
+
+		store.recordSnapshot({
+			agentName: "agent-b",
+			inputTokens: 200,
+			outputTokens: 100,
+			cacheReadTokens: 0,
+			cacheCreationTokens: 0,
+			estimatedCostUsd: null,
+			modelUsed: null,
+			createdAt: new Date().toISOString(),
+		});
+
+		const count = store.purgeSnapshots({ agent: "agent-a" });
+		expect(count).toBe(1);
+
+		const remaining = store.getLatestSnapshots();
+		expect(remaining).toHaveLength(1);
+		expect(remaining[0]?.agentName).toBe("agent-b");
+	});
+
+	test("purgeSnapshots with olderThanMs deletes old snapshots", () => {
+		const now = Date.now();
+		store.recordSnapshot({
+			agentName: "agent-a",
+			inputTokens: 100,
+			outputTokens: 50,
+			cacheReadTokens: 0,
+			cacheCreationTokens: 0,
+			estimatedCostUsd: null,
+			modelUsed: null,
+			createdAt: new Date(now - 120_000).toISOString(), // 2 min ago
+		});
+
+		store.recordSnapshot({
+			agentName: "agent-b",
+			inputTokens: 200,
+			outputTokens: 100,
+			cacheReadTokens: 0,
+			cacheCreationTokens: 0,
+			estimatedCostUsd: null,
+			modelUsed: null,
+			createdAt: new Date(now - 10_000).toISOString(), // 10s ago (recent)
+		});
+
+		const count = store.purgeSnapshots({ olderThanMs: 60_000 }); // delete older than 1 min
+		expect(count).toBe(1); // only the 2-min-old one
+
+		const remaining = store.getLatestSnapshots();
+		expect(remaining).toHaveLength(1);
+		expect(remaining[0]?.agentName).toBe("agent-b");
+	});
+
+	test("table creation is idempotent (re-opening store does not fail)", () => {
+		store.recordSnapshot({
+			agentName: "test-agent",
+			inputTokens: 100,
+			outputTokens: 50,
+			cacheReadTokens: 0,
+			cacheCreationTokens: 0,
+			estimatedCostUsd: null,
+			modelUsed: null,
+			createdAt: new Date().toISOString(),
+		});
+
+		store.close();
+
+		// Re-open and verify data persists
+		store = createMetricsStore(dbPath);
+		const snapshots = store.getLatestSnapshots();
+		expect(snapshots).toHaveLength(1);
+		expect(snapshots[0]?.agentName).toBe("test-agent");
+	});
+});
+
 // === close ===
 
 describe("close", () => {

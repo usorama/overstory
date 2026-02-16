@@ -772,4 +772,280 @@ describe("costsCommand", () => {
 			expect(out).toContain("builder");
 		});
 	});
+
+	// === --live flag ===
+
+	describe("--live flag", () => {
+		test("shows 'No live data available' when no snapshots exist", async () => {
+			const overstoryDir = join(tempDir, ".overstory");
+			const metricsDbPath = join(overstoryDir, "metrics.db");
+			const metricsStore = createMetricsStore(metricsDbPath);
+			metricsStore.close();
+
+			await costsCommand(["--live"]);
+			const out = output();
+
+			expect(out).toContain("No live data available");
+			expect(out).toContain("Token snapshots begin after first tool call");
+		});
+
+		test("shows live table when snapshots exist with active sessions", async () => {
+			const overstoryDir = join(tempDir, ".overstory");
+
+			// Create active sessions
+			const sessDbPath = join(overstoryDir, "sessions.db");
+			const sessionStore = createSessionStore(sessDbPath);
+			sessionStore.upsert({
+				id: "sess-001",
+				agentName: "builder-1",
+				capability: "builder",
+				worktreePath: "/tmp/wt1",
+				branchName: "feat/task1",
+				beadId: "task-001",
+				tmuxSession: "tmux-001",
+				state: "working",
+				pid: 12345,
+				parentAgent: null,
+				depth: 0,
+				runId: "run-001",
+				startedAt: new Date(Date.now() - 120_000).toISOString(), // 2 min ago
+				lastActivity: new Date().toISOString(),
+				escalationLevel: 0,
+				stalledSince: null,
+			});
+			sessionStore.close();
+
+			// Create snapshots
+			const metricsDbPath = join(overstoryDir, "metrics.db");
+			const metricsStore = createMetricsStore(metricsDbPath);
+			metricsStore.recordSnapshot({
+				agentName: "builder-1",
+				inputTokens: 1000,
+				outputTokens: 500,
+				cacheReadTokens: 200,
+				cacheCreationTokens: 100,
+				estimatedCostUsd: 0.15,
+				modelUsed: "claude-sonnet-4-5",
+				createdAt: new Date().toISOString(),
+			});
+			metricsStore.close();
+
+			await costsCommand(["--live"]);
+			const out = output();
+
+			expect(out).toContain("Live Token Usage");
+			expect(out).toContain("1 active agents");
+			expect(out).toContain("builder-1");
+			expect(out).toContain("builder");
+			expect(out).toContain("1,000"); // inputTokens
+			expect(out).toContain("500"); // outputTokens
+			expect(out).toContain("300"); // cache total (200 + 100)
+			expect(out).toContain("$0.15");
+			expect(out).toContain("Burn rate");
+			expect(out).toContain("tokens/min");
+		});
+
+		test("JSON output with --live returns expected structure", async () => {
+			const overstoryDir = join(tempDir, ".overstory");
+
+			// Create active sessions
+			const sessDbPath = join(overstoryDir, "sessions.db");
+			const sessionStore = createSessionStore(sessDbPath);
+			sessionStore.upsert({
+				id: "sess-001",
+				agentName: "builder-1",
+				capability: "builder",
+				worktreePath: "/tmp/wt1",
+				branchName: "feat/task1",
+				beadId: "task-001",
+				tmuxSession: "tmux-001",
+				state: "working",
+				pid: 12345,
+				parentAgent: null,
+				depth: 0,
+				runId: "run-001",
+				startedAt: new Date(Date.now() - 120_000).toISOString(), // 2 min ago
+				lastActivity: new Date().toISOString(),
+				escalationLevel: 0,
+				stalledSince: null,
+			});
+			sessionStore.close();
+
+			// Create snapshots
+			const metricsDbPath = join(overstoryDir, "metrics.db");
+			const metricsStore = createMetricsStore(metricsDbPath);
+			metricsStore.recordSnapshot({
+				agentName: "builder-1",
+				inputTokens: 1000,
+				outputTokens: 500,
+				cacheReadTokens: 200,
+				cacheCreationTokens: 100,
+				estimatedCostUsd: 0.15,
+				modelUsed: "claude-sonnet-4-5",
+				createdAt: new Date().toISOString(),
+			});
+			metricsStore.close();
+
+			await costsCommand(["--live", "--json"]);
+			const out = output();
+
+			const parsed = JSON.parse(out.trim()) as {
+				agents: unknown[];
+				totals: Record<string, unknown>;
+			};
+			expect(parsed.agents).toHaveLength(1);
+			expect(parsed.totals).toBeDefined();
+			expect(parsed.totals.inputTokens).toBe(1000);
+			expect(parsed.totals.outputTokens).toBe(500);
+			expect(parsed.totals.cacheTokens).toBe(300);
+			expect(parsed.totals.costUsd).toBe(0.15);
+			expect(parsed.totals.burnRatePerMin).toBeGreaterThan(0);
+			expect(parsed.totals.tokensPerMin).toBeGreaterThan(0);
+
+			const agent = parsed.agents[0] as Record<string, unknown>;
+			expect(agent.agentName).toBe("builder-1");
+			expect(agent.capability).toBe("builder");
+			expect(agent.inputTokens).toBe(1000);
+			expect(agent.outputTokens).toBe(500);
+		});
+
+		test("--live with --agent filters by agent", async () => {
+			const overstoryDir = join(tempDir, ".overstory");
+
+			// Create active sessions
+			const sessDbPath = join(overstoryDir, "sessions.db");
+			const sessionStore = createSessionStore(sessDbPath);
+			sessionStore.upsert({
+				id: "sess-001",
+				agentName: "builder-1",
+				capability: "builder",
+				worktreePath: "/tmp/wt1",
+				branchName: "feat/task1",
+				beadId: "task-001",
+				tmuxSession: "tmux-001",
+				state: "working",
+				pid: 12345,
+				parentAgent: null,
+				depth: 0,
+				runId: "run-001",
+				startedAt: new Date(Date.now() - 120_000).toISOString(),
+				lastActivity: new Date().toISOString(),
+				escalationLevel: 0,
+				stalledSince: null,
+			});
+			sessionStore.upsert({
+				id: "sess-002",
+				agentName: "scout-1",
+				capability: "scout",
+				worktreePath: "/tmp/wt2",
+				branchName: "feat/task2",
+				beadId: "task-002",
+				tmuxSession: "tmux-002",
+				state: "working",
+				pid: 12346,
+				parentAgent: null,
+				depth: 0,
+				runId: "run-001",
+				startedAt: new Date(Date.now() - 120_000).toISOString(),
+				lastActivity: new Date().toISOString(),
+				escalationLevel: 0,
+				stalledSince: null,
+			});
+			sessionStore.close();
+
+			// Create snapshots
+			const metricsDbPath = join(overstoryDir, "metrics.db");
+			const metricsStore = createMetricsStore(metricsDbPath);
+			metricsStore.recordSnapshot({
+				agentName: "builder-1",
+				inputTokens: 1000,
+				outputTokens: 500,
+				cacheReadTokens: 0,
+				cacheCreationTokens: 0,
+				estimatedCostUsd: 0.15,
+				modelUsed: "claude-sonnet-4-5",
+				createdAt: new Date().toISOString(),
+			});
+			metricsStore.recordSnapshot({
+				agentName: "scout-1",
+				inputTokens: 2000,
+				outputTokens: 1000,
+				cacheReadTokens: 0,
+				cacheCreationTokens: 0,
+				estimatedCostUsd: 0.25,
+				modelUsed: "claude-sonnet-4-5",
+				createdAt: new Date().toISOString(),
+			});
+			metricsStore.close();
+
+			await costsCommand(["--live", "--json", "--agent", "builder-1"]);
+			const out = output();
+
+			const parsed = JSON.parse(out.trim()) as { agents: Record<string, unknown>[] };
+			expect(parsed.agents).toHaveLength(1);
+			expect(parsed.agents[0]?.agentName).toBe("builder-1");
+		});
+
+		test("--live shows burn rate in output", async () => {
+			const overstoryDir = join(tempDir, ".overstory");
+
+			// Create active sessions
+			const sessDbPath = join(overstoryDir, "sessions.db");
+			const sessionStore = createSessionStore(sessDbPath);
+			sessionStore.upsert({
+				id: "sess-001",
+				agentName: "builder-1",
+				capability: "builder",
+				worktreePath: "/tmp/wt1",
+				branchName: "feat/task1",
+				beadId: "task-001",
+				tmuxSession: "tmux-001",
+				state: "working",
+				pid: 12345,
+				parentAgent: null,
+				depth: 0,
+				runId: "run-001",
+				startedAt: new Date(Date.now() - 120_000).toISOString(), // 2 min ago
+				lastActivity: new Date().toISOString(),
+				escalationLevel: 0,
+				stalledSince: null,
+			});
+			sessionStore.close();
+
+			// Create snapshots
+			const metricsDbPath = join(overstoryDir, "metrics.db");
+			const metricsStore = createMetricsStore(metricsDbPath);
+			metricsStore.recordSnapshot({
+				agentName: "builder-1",
+				inputTokens: 1000,
+				outputTokens: 500,
+				cacheReadTokens: 0,
+				cacheCreationTokens: 0,
+				estimatedCostUsd: 0.3,
+				modelUsed: "claude-sonnet-4-5",
+				createdAt: new Date().toISOString(),
+			});
+			metricsStore.close();
+
+			await costsCommand(["--live"]);
+			const out = output();
+
+			expect(out).toContain("Burn rate:");
+			expect(out).toContain("/min");
+			expect(out).toContain("tokens/min");
+			expect(out).toContain("Elapsed:");
+		});
+
+		test("--live with no metrics.db shows empty JSON or message", async () => {
+			await costsCommand(["--live", "--json"]);
+			const out = output();
+
+			const parsed = JSON.parse(out.trim()) as {
+				agents: unknown[];
+				totals: Record<string, unknown>;
+			};
+			expect(parsed.agents).toEqual([]);
+			expect(parsed.totals.costUsd).toBe(0);
+		});
+	});
 });

@@ -159,6 +159,56 @@ async function readStdinJson(): Promise<Record<string, unknown> | null> {
 }
 
 /**
+ * Resolve the path to a Claude Code transcript JSONL file.
+ * Tries direct construction first, then searches all project directories.
+ * Caches the found path for faster subsequent lookups.
+ */
+async function resolveTranscriptPath(
+	projectRoot: string,
+	sessionId: string,
+	logsBase: string,
+	agentName: string,
+): Promise<string | null> {
+	// Check cached path first
+	const cachePath = join(logsBase, agentName, ".transcript-path");
+	const cacheFile = Bun.file(cachePath);
+	if (await cacheFile.exists()) {
+		const cached = (await cacheFile.text()).trim();
+		if (cached.length > 0 && (await Bun.file(cached).exists())) {
+			return cached;
+		}
+	}
+
+	const homeDir = process.env.HOME ?? "";
+	const claudeProjectsDir = join(homeDir, ".claude", "projects");
+
+	// Try direct construction from project root
+	const projectKey = projectRoot.replace(/\//g, "-");
+	const directPath = join(claudeProjectsDir, projectKey, `${sessionId}.jsonl`);
+	if (await Bun.file(directPath).exists()) {
+		await Bun.write(cachePath, directPath);
+		return directPath;
+	}
+
+	// Search all project directories for the session file
+	const { readdir } = await import("node:fs/promises");
+	try {
+		const projects = await readdir(claudeProjectsDir);
+		for (const project of projects) {
+			const candidate = join(claudeProjectsDir, project, `${sessionId}.jsonl`);
+			if (await Bun.file(candidate).exists()) {
+				await Bun.write(cachePath, candidate);
+				return candidate;
+			}
+		}
+	} catch {
+		// Claude projects dir may not exist
+	}
+
+	return null;
+}
+
+/**
  * Entry point for `overstory log <event> --agent <name>`.
  */
 const LOG_HELP = `overstory log — Log a hook event
@@ -303,6 +353,53 @@ export async function logCommand(args: string[]): Promise<void> {
 					eventStore.close();
 				} catch {
 					// Non-fatal: EventStore write should not break hook execution
+				}
+
+				// Throttled token snapshot recording
+				if (sessionId) {
+					try {
+						// Throttle check
+						const snapshotMarkerPath = join(logsBase, agentName, ".last-snapshot");
+						const SNAPSHOT_INTERVAL_MS = 30_000;
+						const snapshotMarkerFile = Bun.file(snapshotMarkerPath);
+						let shouldSnapshot = true;
+
+						if (await snapshotMarkerFile.exists()) {
+							const lastTs = Number.parseInt(await snapshotMarkerFile.text(), 10);
+							if (!Number.isNaN(lastTs) && Date.now() - lastTs < SNAPSHOT_INTERVAL_MS) {
+								shouldSnapshot = false;
+							}
+						}
+
+						if (shouldSnapshot) {
+							const transcriptPath = await resolveTranscriptPath(
+								config.project.root,
+								sessionId,
+								logsBase,
+								agentName,
+							);
+							if (transcriptPath) {
+								const usage = await parseTranscriptUsage(transcriptPath);
+								const cost = estimateCost(usage);
+								const metricsDbPath = join(config.project.root, ".overstory", "metrics.db");
+								const metricsStore = createMetricsStore(metricsDbPath);
+								metricsStore.recordSnapshot({
+									agentName,
+									inputTokens: usage.inputTokens,
+									outputTokens: usage.outputTokens,
+									cacheReadTokens: usage.cacheReadTokens,
+									cacheCreationTokens: usage.cacheCreationTokens,
+									estimatedCostUsd: cost,
+									modelUsed: usage.modelUsed,
+									createdAt: new Date().toISOString(),
+								});
+								metricsStore.close();
+								await Bun.write(snapshotMarkerPath, String(Date.now()));
+							}
+						}
+					} catch {
+						// Non-fatal: snapshot recording should not break tool-end handling
+					}
 				}
 			}
 			break;

@@ -237,6 +237,7 @@ export const COMMANDS: readonly CommandDef[] = [
 		name: "costs",
 		desc: "Token/cost analysis and breakdown",
 		flags: [
+			{ name: "--live", desc: "Show real-time token usage for active agents" },
 			{ name: "--agent", desc: "Filter by agent", takesValue: true },
 			{ name: "--run", desc: "Filter by run", takesValue: true },
 			{ name: "--by-capability", desc: "Group by capability with subtotals" },

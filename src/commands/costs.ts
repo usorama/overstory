@@ -195,6 +195,7 @@ const COSTS_HELP = `overstory costs -- Token/cost analysis and breakdown
 Usage: overstory costs [options]
 
 Options:
+  --live                 Show real-time token usage for active agents
   --agent <name>         Filter by agent name
   --run <id>             Filter by run ID
   --by-capability        Group results by capability with subtotals
@@ -212,6 +213,7 @@ export async function costsCommand(args: string[]): Promise<void> {
 	}
 
 	const json = hasFlag(args, "--json");
+	const live = hasFlag(args, "--live");
 	const byCapability = hasFlag(args, "--by-capability");
 	const agentName = getFlag(args, "--agent");
 	const runId = getFlag(args, "--run");
@@ -232,6 +234,178 @@ export async function costsCommand(args: string[]): Promise<void> {
 	const cwd = process.cwd();
 	const config = await loadConfig(cwd);
 	const overstoryDir = join(config.project.root, ".overstory");
+
+	// Handle --live flag (early return for live view)
+	if (live) {
+		const metricsDbPath = join(overstoryDir, "metrics.db");
+		const metricsFile = Bun.file(metricsDbPath);
+		if (!(await metricsFile.exists())) {
+			if (json) {
+				process.stdout.write(
+					`${JSON.stringify({ agents: [], totals: { inputTokens: 0, outputTokens: 0, cacheTokens: 0, costUsd: 0, burnRatePerMin: 0, tokensPerMin: 0 } })}\n`,
+				);
+			} else {
+				process.stdout.write(
+					"No live data available. Token snapshots begin after first tool call.\n",
+				);
+			}
+			return;
+		}
+
+		const metricsStore = createMetricsStore(metricsDbPath);
+		const { store: sessionStore } = openSessionStore(overstoryDir);
+
+		try {
+			const snapshots = metricsStore.getLatestSnapshots();
+			if (snapshots.length === 0) {
+				if (json) {
+					process.stdout.write(
+						`${JSON.stringify({ agents: [], totals: { inputTokens: 0, outputTokens: 0, cacheTokens: 0, costUsd: 0, burnRatePerMin: 0, tokensPerMin: 0 } })}\n`,
+					);
+				} else {
+					process.stdout.write(
+						"No live data available. Token snapshots begin after first tool call.\n",
+					);
+				}
+				return;
+			}
+
+			// Get active sessions to join with snapshots
+			const activeSessions = sessionStore.getActive();
+
+			// Filter snapshots by agent if --agent is provided
+			const filteredSnapshots = agentName
+				? snapshots.filter((s) => s.agentName === agentName)
+				: snapshots;
+
+			// Build agent data with session info
+			interface LiveAgentData {
+				agentName: string;
+				capability: string;
+				inputTokens: number;
+				outputTokens: number;
+				cacheReadTokens: number;
+				cacheCreationTokens: number;
+				estimatedCostUsd: number;
+				modelUsed: string | null;
+				snapshotAt: string;
+				sessionStartedAt: string;
+				elapsedMs: number;
+			}
+
+			const agentData: LiveAgentData[] = [];
+			const now = Date.now();
+
+			for (const snapshot of filteredSnapshots) {
+				const session = activeSessions.find((s) => s.agentName === snapshot.agentName);
+				if (!session) continue; // Skip inactive agents
+
+				const startedAt = new Date(session.startedAt).getTime();
+				const elapsedMs = now - startedAt;
+
+				agentData.push({
+					agentName: snapshot.agentName,
+					capability: session.capability,
+					inputTokens: snapshot.inputTokens,
+					outputTokens: snapshot.outputTokens,
+					cacheReadTokens: snapshot.cacheReadTokens,
+					cacheCreationTokens: snapshot.cacheCreationTokens,
+					estimatedCostUsd: snapshot.estimatedCostUsd ?? 0,
+					modelUsed: snapshot.modelUsed,
+					snapshotAt: snapshot.createdAt,
+					sessionStartedAt: session.startedAt,
+					elapsedMs,
+				});
+			}
+
+			// Compute totals
+			let totalInput = 0;
+			let totalOutput = 0;
+			let totalCacheRead = 0;
+			let totalCacheCreate = 0;
+			let totalCost = 0;
+			let totalElapsedMs = 0;
+
+			for (const agent of agentData) {
+				totalInput += agent.inputTokens;
+				totalOutput += agent.outputTokens;
+				totalCacheRead += agent.cacheReadTokens;
+				totalCacheCreate += agent.cacheCreationTokens;
+				totalCost += agent.estimatedCostUsd;
+				totalElapsedMs += agent.elapsedMs;
+			}
+
+			const avgElapsedMs = agentData.length > 0 ? totalElapsedMs / agentData.length : 0;
+			const totalCacheTokens = totalCacheRead + totalCacheCreate;
+			const totalTokens = totalInput + totalOutput;
+			const burnRatePerMin = avgElapsedMs > 0 ? totalCost / (avgElapsedMs / 60_000) : 0;
+			const tokensPerMin = avgElapsedMs > 0 ? totalTokens / (avgElapsedMs / 60_000) : 0;
+
+			if (json) {
+				process.stdout.write(
+					`${JSON.stringify({
+						agents: agentData,
+						totals: {
+							inputTokens: totalInput,
+							outputTokens: totalOutput,
+							cacheTokens: totalCacheTokens,
+							costUsd: totalCost,
+							burnRatePerMin,
+							tokensPerMin,
+						},
+					})}\n`,
+				);
+			} else {
+				const w = process.stdout.write.bind(process.stdout);
+				const separator = "\u2500".repeat(70);
+
+				w(`${color.bold}Live Token Usage (${agentData.length} active agents)${color.reset}\n`);
+				w(`${"=".repeat(70)}\n`);
+				w(
+					`${padRight("Agent", 19)}${padRight("Capability", 12)}` +
+						`${padLeft("Input", 10)}${padLeft("Output", 10)}` +
+						`${padLeft("Cache", 10)}${padLeft("Cost", 10)}\n`,
+				);
+				w(`${color.dim}${separator}${color.reset}\n`);
+
+				for (const agent of agentData) {
+					const cacheTotal = agent.cacheReadTokens + agent.cacheCreationTokens;
+					w(
+						`${padRight(agent.agentName, 19)}${padRight(agent.capability, 12)}` +
+							`${padLeft(formatNumber(agent.inputTokens), 10)}` +
+							`${padLeft(formatNumber(agent.outputTokens), 10)}` +
+							`${padLeft(formatNumber(cacheTotal), 10)}` +
+							`${padLeft(formatCost(agent.estimatedCostUsd), 10)}\n`,
+					);
+				}
+
+				w(`${color.dim}${separator}${color.reset}\n`);
+				w(
+					`${color.green}${color.bold}${padRight("Total", 31)}` +
+						`${padLeft(formatNumber(totalInput), 10)}` +
+						`${padLeft(formatNumber(totalOutput), 10)}` +
+						`${padLeft(formatNumber(totalCacheTokens), 10)}` +
+						`${padLeft(formatCost(totalCost), 10)}${color.reset}\n\n`,
+				);
+
+				// Format elapsed time
+				const totalElapsedSec = Math.floor(avgElapsedMs / 1000);
+				const minutes = Math.floor(totalElapsedSec / 60);
+				const seconds = totalElapsedSec % 60;
+				const elapsedStr = `${minutes}m ${seconds}s`;
+
+				w(
+					`Burn rate: ${formatCost(burnRatePerMin)}/min  |  ` +
+						`${formatNumber(Math.floor(tokensPerMin))} tokens/min  |  ` +
+						`Elapsed: ${elapsedStr}\n`,
+				);
+			}
+		} finally {
+			metricsStore.close();
+			sessionStore.close();
+		}
+		return;
+	}
 
 	// Check if metrics.db exists
 	const metricsDbPath = join(overstoryDir, "metrics.db");

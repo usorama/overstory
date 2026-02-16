@@ -322,6 +322,18 @@ export interface SessionMetrics {
 	modelUsed: string | null;
 }
 
+/** A point-in-time token usage snapshot for a running agent session. */
+export interface TokenSnapshot {
+	agentName: string;
+	inputTokens: number;
+	outputTokens: number;
+	cacheReadTokens: number;
+	cacheCreationTokens: number;
+	estimatedCostUsd: number | null;
+	modelUsed: string | null;
+	createdAt: string;
+}
+
 // === Task Groups (Batch Coordination) ===
 
 export interface TaskGroup {
