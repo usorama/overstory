@@ -50,30 +50,53 @@ Purpose-built messaging via `bun:sqlite` in `.overstory/mail.db`. WAL mode for c
 ```
 overstory/                        # This repo (the overstory tool itself)
   src/
-    index.ts                      # CLI entry point (command router)
+    index.ts                      # CLI entry point (command router, 24 commands)
     types.ts                      # ALL shared types and interfaces
     config.ts                     # Config loader + defaults + validation
     errors.ts                     # Custom error types (extend OverstoryError)
     commands/                     # One file per CLI subcommand
       init.ts                     # overstory init
       sling.ts                    # overstory sling (spawn worker)
-      status.ts                   # overstory status
       prime.ts                    # overstory prime
-      mail.ts                     # overstory mail send/check/list/read/reply
+      status.ts                   # overstory status
+      dashboard.ts                # overstory dashboard (live TUI)
+      inspect.ts                  # overstory inspect (deep agent view)
+      coordinator.ts              # overstory coordinator start/stop/status
+      supervisor.ts               # overstory supervisor start/stop/status
+      hooks.ts                    # overstory hooks install/uninstall/status
+      mail.ts                     # overstory mail send/check/list/read/reply/purge
+      nudge.ts                    # overstory nudge (tmux text nudge)
       merge.ts                    # overstory merge
+      spec.ts                     # overstory spec write
+      group.ts                    # overstory group create/status/add/remove/list
+      clean.ts                    # overstory clean (nuclear cleanup)
+      doctor.ts                   # overstory doctor (health checks)
       worktree.ts                 # overstory worktree list/clean
       log.ts                      # overstory log (hook target)
       watch.ts                    # overstory watch (watchdog)
       monitor.ts                  # overstory monitor start/stop/status (Tier 2)
+      trace.ts                    # overstory trace (event timeline)
+      errors.ts                   # overstory errors (aggregated error view)
+      replay.ts                   # overstory replay (multi-agent replay)
+      run.ts                      # overstory run list/show/complete
+      costs.ts                    # overstory costs (token/cost analysis)
       metrics.ts                  # overstory metrics
     agents/                       # Agent lifecycle management
       manifest.ts                 # Agent registry (load + query capabilities)
       overlay.ts                  # Dynamic CLAUDE.md overlay generator
       identity.ts                 # Persistent agent identity (CVs)
       hooks-deployer.ts           # Deploy hooks config to worktree
+      lifecycle.ts                # Session handoff (checkpoint/resume/complete)
+      checkpoint.ts               # Session checkpoint save/load/clear
     worktree/
       manager.ts                  # Create/list/cleanup git worktrees via Bun.spawn
       tmux.ts                     # Tmux session management via Bun.spawn
+    sessions/
+      store.ts                    # SQLite SessionStore + RunStore (agent lifecycle, runs)
+      compat.ts                   # Migration bridge from sessions.json to sessions.db
+    events/
+      store.ts                    # SQLite EventStore (tool events, timelines, errors)
+      tool-filter.ts              # Smart arg filtering for event storage
     beads/
       client.ts                   # bd CLI wrapper (--json parsing)
       molecules.ts                # Molecule management helpers
@@ -96,13 +119,18 @@ overstory/                        # This repo (the overstory tool itself)
     metrics/
       store.ts                    # SQLite metrics storage
       summary.ts                  # Metrics reporting
+      transcript.ts               # Claude Code transcript JSONL parser + cost estimation
+    doctor/                       # Modular health check system
+      *.ts                        # 9 check categories (see `overstory doctor --help`)
   agents/                         # Base agent definitions (the HOW)
-    scout.md                      # Read-only exploration
-    builder.md                    # Implementation
-    reviewer.md                   # Read-only validation
-    lead.md                       # Team lead (can spawn sub-workers)
-    merger.md                     # Branch merge specialist
-    monitor.md                    # Tier 2 continuous fleet patrol
+    scout.md                      # Read-only exploration (leaf, depth 2)
+    builder.md                    # Implementation (leaf, depth 2)
+    reviewer.md                   # Read-only validation (leaf, depth 2)
+    merger.md                     # Branch merge specialist (leaf, depth 2)
+    lead.md                       # Team lead (can spawn sub-workers, depth 1)
+    supervisor.md                 # Per-project supervisor (can spawn, depth 1)
+    coordinator.md                # Top-level orchestrator (spawns leads only, depth 0)
+    monitor.md                    # Tier 2 continuous fleet patrol (no worktree)
   templates/
     CLAUDE.md.tmpl                # Template for orchestrator CLAUDE.md
     overlay.md.tmpl               # Template for per-worker overlay
@@ -118,12 +146,18 @@ target-project/
     config.yaml                   # Project configuration
     agent-manifest.json           # Agent registry
     hooks.json                    # Central hooks config
+    current-run.txt               # Active run ID
+    merge-queue.json              # FIFO merge queue
     agents/{name}/                # Agent state + identity
+      identity.yaml               # Persistent agent CV
+      checkpoint.json             # Session checkpoint for recovery
     worktrees/{agent-name}/       # Git worktrees (gitignored)
     specs/{bead-id}.md            # Task specifications
     logs/{agent-name}/{ts}/       # Agent logs (gitignored)
     mail.db                       # SQLite mail (gitignored, WAL mode)
-    metrics.db                    # SQLite metrics (gitignored)
+    sessions.db                   # SQLite sessions + runs (gitignored, WAL mode)
+    events.db                     # SQLite events/timelines (gitignored, WAL mode)
+    metrics.db                    # SQLite metrics (gitignored, WAL mode)
 ```
 
 ## Coding Conventions
@@ -188,69 +222,195 @@ db.exec("PRAGMA busy_timeout=5000");
 
 ## CLI Command Reference
 
+### Core Workflow
+
 ```
 overstory init                          Initialize .overstory/ in current project
 
 overstory sling <task-id>              Spawn a worker agent
   --capability <type>                    builder | scout | reviewer | lead | merger
-  --name <name>                          Unique agent name
+  --name <name>                          Unique agent name (required)
   --spec <path>                          Path to task spec file
-  --files <f1,f2,...>                    Exclusive file scope
+  --files <f1,f2,...>                    Exclusive file scope (comma-separated)
   --parent <agent-name>                  Parent (for hierarchy tracking)
-  --depth <n>                            Current hierarchy depth
+  --depth <n>                            Current hierarchy depth (default: 0)
+  --force-hierarchy                      Bypass hierarchy validation (debugging only)
+  --json                                 JSON output
 
 overstory prime                         Load context for orchestrator/agent
   --agent <name>                         Per-agent priming
   --compact                              Less context (for PreCompact hook)
 
-overstory status                        Show all active agents, worktrees, beads state
-  --json                                 JSON output
-  --verbose                              Extra per-agent detail
-  --watch                                (deprecated) Use 'overstory dashboard'
+overstory spec write <bead-id>         Write a spec file to .overstory/specs/
+  --body <content>                       Spec content (or pipe via stdin)
+  --agent <name>                         Agent attribution
+```
 
+### Coordination Agents
+
+```
+overstory coordinator <sub>            Persistent coordinator agent
+  start                                  Start coordinator (spawns Claude Code at root)
+    --attach / --no-attach               Control tmux attach (default: attach on TTY)
+    --watchdog                           Auto-start watchdog daemon
+  stop                                   Stop coordinator (kills tmux session)
+  status                                 Show coordinator state
+  --json                                 JSON output
+
+overstory supervisor <sub>             Per-project supervisor agent
+  start                                  Start supervisor
+    --task <bead-id>                     Bead task ID (required)
+    --name <name>                        Unique name (required)
+    --parent <agent>                     Parent agent (default: coordinator)
+    --depth <n>                          Hierarchy depth (default: 1)
+  stop --name <name>                     Stop supervisor
+  status [--name <name>]                 Show supervisor(s) state
+  --json                                 JSON output
+```
+
+### Messaging
+
+```
 overstory mail send                     Send a message
   --to <agent>  --subject <text>  --body <text>
-  --type <status|question|result|error>
+  --from <name>                          Sender name
+  --type <type>                          Semantic: status|question|result|error
+                                         Protocol: worker_done|merge_ready|merged|
+                                           merge_failed|escalation|health_check|
+                                           dispatch|assign
   --priority <low|normal|high|urgent>
+  --payload <json>                       Structured JSON payload
+  --json                                 JSON output
 
 overstory mail check                    Check inbox (unread messages)
   --agent <name>  --inject  --json
 
 overstory mail list                     List messages with filters
-  --from <name>  --to <name>  --unread
+  --from <name>  --to <name>  --unread  --json
 
 overstory mail read <id>                Mark message as read
 overstory mail reply <id> --body <text> Reply in same thread
+overstory mail purge                    Delete old messages
+  --all | --days <n> | --agent <name>
 
-overstory nudge <agent> [message]       Send a text nudge to an agent
+overstory nudge <agent> [message]       Send a text nudge to an agent via tmux
   --from <name>                          Sender name (default: orchestrator)
   --force                                Skip debounce check
   --json                                 JSON output
+```
 
+### Merge
+
+```
 overstory merge                         Merge agent branches into canonical
   --branch <name>                        Specific branch
   --all                                  All completed branches
   --dry-run                              Check for conflicts only
+  --json                                 JSON output
+```
+
+### Task Groups
+
+```
+overstory group <sub>                  Batch coordination
+  create '<name>' <id1> [id2...]         Create a new task group
+  status [group-id]                      Show progress for one or all groups
+  add <group-id> <id1> [id2...]          Add issues to a group
+  remove <group-id> <id1> [id2...]       Remove issues from a group
+  list                                   List all groups (summary)
+  --json  --skip-validation              JSON output / skip beads checks
+```
+
+### Observability
+
+```
+overstory status                        Show all active agents, worktrees, state
+  --json  --verbose                      JSON output / extra per-agent detail
+
+overstory dashboard                     Live TUI dashboard for agent monitoring
+  --interval <ms>                        Poll interval (default: 2000, min: 500)
+
+overstory inspect <agent>               Deep inspection of a single agent
+  --follow                               Poll and refresh continuously
+  --interval <ms>                        Polling interval (default: 3000)
+  --limit <n>                            Recent tool calls to show (default: 20)
+  --no-tmux                              Skip tmux capture-pane
+  --json                                 JSON output
+
+overstory trace <target>               Chronological event timeline for agent/bead
+  --since <ts>  --until <ts>             Time range filter (ISO 8601)
+  --limit <n>                            Max events (default: 100)
+  --json                                 JSON output
+
+overstory errors                        Aggregated error view across agents
+  --agent <name>  --run <id>             Filter by agent or run
+  --since <ts>  --until <ts>             Time range filter (ISO 8601)
+  --limit <n>                            Max errors (default: 100)
+  --json                                 JSON output
+
+overstory replay                        Interleaved chronological replay across agents
+  --run <id>  --agent <name>             Filter by run or agent (repeatable)
+  --since <ts>  --until <ts>             Time range filter (ISO 8601)
+  --limit <n>                            Max events (default: 200)
+  --json                                 JSON output
+
+overstory run [sub]                     Manage runs (coordinator session groupings)
+  (default)                              Show current run status
+  list [--last <n>]                      List recent runs (default: 10)
+  show <id>                              Show run details (agents, duration)
+  complete                               Mark current run as completed
+  --json                                 JSON output
+
+overstory costs                          Token/cost analysis and breakdown
+  --agent <name>  --run <id>             Filter by agent or run
+  --by-capability                        Group by capability with subtotals
+  --last <n>                             Recent sessions (default: 20)
+  --json                                 JSON output
+
+overstory metrics                       Show session metrics
+  --last <n>  --json
+```
+
+### Infrastructure
+
+```
+overstory hooks <sub>                  Manage orchestrator hooks
+  install                                Install hooks to .claude/settings.local.json
+    --force                              Overwrite existing hooks
+  uninstall                              Remove hooks
+  status                                 Check if hooks are installed
+  --json                                 JSON output
 
 overstory worktree list                 List worktrees with status
 overstory worktree clean                Remove completed worktrees
   --completed                            Only finished agents
   --all                                  Force remove all
 
-overstory log <event>                   Log an event (called by hooks)
+overstory log <event>                   Log a hook event (called by hooks)
   --agent <name>
   Events: tool-start, tool-end, session-end
 
 overstory watch                         Start watchdog daemon (Tier 0)
   --interval <ms>  --background
 
-overstory monitor                       Manage Tier 2 monitor agent
-  start                                   Start monitor (spawns Claude Code at root)
-  stop                                    Stop monitor (kills tmux session)
-  status                                  Show monitor state
+overstory monitor <sub>                Manage Tier 2 monitor agent
+  start                                  Start monitor (spawns Claude Code at root)
+  stop                                   Stop monitor (kills tmux session)
+  status                                 Show monitor state
 
-overstory metrics                       Show session metrics
-  --last <n>  --json
+overstory doctor                        Run health checks on overstory setup
+  --category <name>                      Run one category only
+  --verbose                              Show passing checks too
+  --json                                 JSON output
+  Categories: dependencies, config, structure, databases,
+              consistency, agents, merge, logs, version
+
+overstory clean                         Wipe runtime state (nuclear cleanup)
+  --all                                  Wipe everything
+  --mail  --sessions  --metrics          Individual DB cleanup
+  --logs  --worktrees  --branches        Individual resource cleanup
+  --agents  --specs                      Individual state cleanup
+  --json                                 JSON output
 ```
 
 ## Testing
