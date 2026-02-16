@@ -14,6 +14,7 @@ import { costsCommand } from "./commands/costs.ts";
 import { dashboardCommand } from "./commands/dashboard.ts";
 import { doctorCommand } from "./commands/doctor.ts";
 import { errorsCommand } from "./commands/errors.ts";
+import { feedCommand } from "./commands/feed.ts";
 import { groupCommand } from "./commands/group.ts";
 import { hooksCommand } from "./commands/hooks.ts";
 import { initCommand } from "./commands/init.ts";
@@ -67,6 +68,7 @@ Commands:
   logs [options]          Query NDJSON logs across agents
   watch                   Start watchdog daemon
   trace <target>         Chronological event timeline for agent/bead
+  feed [options]          Unified real-time event stream across all agents
   errors [options]        Aggregated error view across agents
   run [sub]               Manage runs (list/show/complete)
   replay [options]        Interleaved chronological replay across agents
@@ -104,6 +106,7 @@ const COMMANDS = [
 	"logs",
 	"watch",
 	"trace",
+	"feed",
 	"errors",
 	"replay",
 	"run",
@@ -248,6 +251,9 @@ async function main(): Promise<void> {
 			break;
 		case "trace":
 			await traceCommand(commandArgs);
+			break;
+		case "feed":
+			await feedCommand(commandArgs);
 			break;
 		case "errors":
 			await errorsCommand(commandArgs);
