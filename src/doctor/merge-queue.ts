@@ -38,7 +38,7 @@ export const checkMergeQueue: DoctorCheckFn = (_config, overstoryDir): DoctorChe
 
 	try {
 		// Check table exists
-		let tableCheck;
+		let tableCheck: unknown;
 		try {
 			tableCheck = db
 				.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='merge_queue'")
