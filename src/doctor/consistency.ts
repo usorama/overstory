@@ -228,6 +228,59 @@ export async function checkConsistency(
 		});
 	}
 
+	// 9. Check reviewer-to-builder ratio per lead
+	const parentGroups = new Map<string, { builders: number; reviewers: number }>();
+	for (const session of storeSessions) {
+		if (session.parentAgent && (session.capability === "builder" || session.capability === "reviewer")) {
+			const group = parentGroups.get(session.parentAgent) ?? { builders: 0, reviewers: 0 };
+			if (session.capability === "builder") {
+				group.builders++;
+			} else {
+				group.reviewers++;
+			}
+			parentGroups.set(session.parentAgent, group);
+		}
+	}
+
+	const leadsWithoutReview: string[] = [];
+	const leadsWithPartialReview: string[] = [];
+	for (const [parent, counts] of parentGroups) {
+		if (counts.builders > 0 && counts.reviewers === 0) {
+			leadsWithoutReview.push(`${parent}: ${counts.builders} builder(s), 0 reviewers`);
+		} else if (counts.builders > 0 && counts.reviewers < counts.builders) {
+			leadsWithPartialReview.push(
+				`${parent}: ${counts.builders} builder(s), ${counts.reviewers} reviewer(s)`,
+			);
+		}
+	}
+
+	if (leadsWithoutReview.length > 0) {
+		checks.push({
+			name: "reviewer-coverage",
+			category: "consistency",
+			status: "warn",
+			message: `${leadsWithoutReview.length} lead(s) spawned builders without any reviewers`,
+			details: [...leadsWithoutReview, ...leadsWithPartialReview],
+		});
+	} else if (leadsWithPartialReview.length > 0) {
+		checks.push({
+			name: "reviewer-coverage",
+			category: "consistency",
+			status: "warn",
+			message: `${leadsWithPartialReview.length} lead(s) have partial reviewer coverage`,
+			details: leadsWithPartialReview,
+		});
+	} else {
+		checks.push({
+			name: "reviewer-coverage",
+			category: "consistency",
+			status: "pass",
+			message: parentGroups.size > 0
+				? "All leads have reviewer coverage for builders"
+				: "No builder sessions found (nothing to check)",
+		});
+	}
+
 	// Close the SessionStore
 	if (storeHandle) {
 		storeHandle.close();

@@ -397,4 +397,250 @@ describe("checkConsistency", () => {
 		expect(storeCheck).toBeDefined();
 		expect(storeCheck?.status).toBe("fail");
 	});
+
+	test("reviewer-coverage: leads without reviewers emits warn", async () => {
+		const dbPath = join(overstoryDir, "sessions.db");
+		const store = createSessionStore(dbPath);
+
+		// Add 2 builder sessions under lead-1, no reviewers
+		store.upsert({
+			id: "session-1",
+			agentName: "builder-1",
+			capability: "builder",
+			worktreePath: join(overstoryDir, "worktrees", "builder-1"),
+			branchName: "overstory/builder-1/test-123",
+			beadId: "test-123",
+			tmuxSession: "overstory-testproject-builder-1",
+			state: "working",
+			pid: null,
+			parentAgent: "lead-1",
+			depth: 1,
+			runId: null,
+			startedAt: new Date().toISOString(),
+			lastActivity: new Date().toISOString(),
+			escalationLevel: 0,
+			stalledSince: null,
+		});
+
+		store.upsert({
+			id: "session-2",
+			agentName: "builder-2",
+			capability: "builder",
+			worktreePath: join(overstoryDir, "worktrees", "builder-2"),
+			branchName: "overstory/builder-2/test-456",
+			beadId: "test-456",
+			tmuxSession: "overstory-testproject-builder-2",
+			state: "working",
+			pid: null,
+			parentAgent: "lead-1",
+			depth: 1,
+			runId: null,
+			startedAt: new Date().toISOString(),
+			lastActivity: new Date().toISOString(),
+			escalationLevel: 0,
+			stalledSince: null,
+		});
+		store.close();
+
+		const checks = await checkConsistency(config, overstoryDir, mockDeps);
+
+		const reviewerCheck = checks.find((c) => c.name === "reviewer-coverage");
+		expect(reviewerCheck).toBeDefined();
+		expect(reviewerCheck?.status).toBe("warn");
+		expect(reviewerCheck?.message).toContain("without any reviewers");
+		expect(reviewerCheck?.details).toBeDefined();
+		expect(reviewerCheck?.details?.length).toBeGreaterThan(0);
+	});
+
+	test("reviewer-coverage: partial reviewer coverage emits warn", async () => {
+		const dbPath = join(overstoryDir, "sessions.db");
+		const store = createSessionStore(dbPath);
+
+		// Add 3 builders and 1 reviewer under same parent
+		for (let i = 1; i <= 3; i++) {
+			store.upsert({
+				id: `session-builder-${i}`,
+				agentName: `builder-${i}`,
+				capability: "builder",
+				worktreePath: join(overstoryDir, "worktrees", `builder-${i}`),
+				branchName: `overstory/builder-${i}/test-${i}`,
+				beadId: `test-${i}`,
+				tmuxSession: `overstory-testproject-builder-${i}`,
+				state: "working",
+				pid: null,
+				parentAgent: "lead-1",
+				depth: 1,
+				runId: null,
+				startedAt: new Date().toISOString(),
+				lastActivity: new Date().toISOString(),
+				escalationLevel: 0,
+				stalledSince: null,
+			});
+		}
+
+		store.upsert({
+			id: "session-reviewer-1",
+			agentName: "reviewer-1",
+			capability: "reviewer",
+			worktreePath: join(overstoryDir, "worktrees", "reviewer-1"),
+			branchName: "overstory/reviewer-1/test-r1",
+			beadId: "test-r1",
+			tmuxSession: "overstory-testproject-reviewer-1",
+			state: "working",
+			pid: null,
+			parentAgent: "lead-1",
+			depth: 1,
+			runId: null,
+			startedAt: new Date().toISOString(),
+			lastActivity: new Date().toISOString(),
+			escalationLevel: 0,
+			stalledSince: null,
+		});
+		store.close();
+
+		const checks = await checkConsistency(config, overstoryDir, mockDeps);
+
+		const reviewerCheck = checks.find((c) => c.name === "reviewer-coverage");
+		expect(reviewerCheck).toBeDefined();
+		expect(reviewerCheck?.status).toBe("warn");
+		expect(reviewerCheck?.message).toContain("partial reviewer coverage");
+	});
+
+	test("reviewer-coverage: full reviewer coverage emits pass", async () => {
+		const dbPath = join(overstoryDir, "sessions.db");
+		const store = createSessionStore(dbPath);
+
+		// Add 2 builders and 2 reviewers under same parent
+		for (let i = 1; i <= 2; i++) {
+			store.upsert({
+				id: `session-builder-${i}`,
+				agentName: `builder-${i}`,
+				capability: "builder",
+				worktreePath: join(overstoryDir, "worktrees", `builder-${i}`),
+				branchName: `overstory/builder-${i}/test-${i}`,
+				beadId: `test-${i}`,
+				tmuxSession: `overstory-testproject-builder-${i}`,
+				state: "working",
+				pid: null,
+				parentAgent: "lead-1",
+				depth: 1,
+				runId: null,
+				startedAt: new Date().toISOString(),
+				lastActivity: new Date().toISOString(),
+				escalationLevel: 0,
+				stalledSince: null,
+			});
+
+			store.upsert({
+				id: `session-reviewer-${i}`,
+				agentName: `reviewer-${i}`,
+				capability: "reviewer",
+				worktreePath: join(overstoryDir, "worktrees", `reviewer-${i}`),
+				branchName: `overstory/reviewer-${i}/test-r${i}`,
+				beadId: `test-r${i}`,
+				tmuxSession: `overstory-testproject-reviewer-${i}`,
+				state: "working",
+				pid: null,
+				parentAgent: "lead-1",
+				depth: 1,
+				runId: null,
+				startedAt: new Date().toISOString(),
+				lastActivity: new Date().toISOString(),
+				escalationLevel: 0,
+				stalledSince: null,
+			});
+		}
+		store.close();
+
+		const checks = await checkConsistency(config, overstoryDir, mockDeps);
+
+		const reviewerCheck = checks.find((c) => c.name === "reviewer-coverage");
+		expect(reviewerCheck).toBeDefined();
+		expect(reviewerCheck?.status).toBe("pass");
+	});
+
+	test("reviewer-coverage: no builder sessions emits pass", async () => {
+		// Don't create any sessions at all
+		const checks = await checkConsistency(config, overstoryDir, mockDeps);
+
+		const reviewerCheck = checks.find((c) => c.name === "reviewer-coverage");
+		expect(reviewerCheck).toBeDefined();
+		expect(reviewerCheck?.status).toBe("pass");
+		expect(reviewerCheck?.message).toContain("No builder sessions found");
+	});
+
+	test("reviewer-coverage: multiple leads mixed coverage", async () => {
+		const dbPath = join(overstoryDir, "sessions.db");
+		const store = createSessionStore(dbPath);
+
+		// Lead-1 has builders + reviewers (good)
+		store.upsert({
+			id: "session-builder-1",
+			agentName: "builder-1",
+			capability: "builder",
+			worktreePath: join(overstoryDir, "worktrees", "builder-1"),
+			branchName: "overstory/builder-1/test-1",
+			beadId: "test-1",
+			tmuxSession: "overstory-testproject-builder-1",
+			state: "working",
+			pid: null,
+			parentAgent: "lead-1",
+			depth: 1,
+			runId: null,
+			startedAt: new Date().toISOString(),
+			lastActivity: new Date().toISOString(),
+			escalationLevel: 0,
+			stalledSince: null,
+		});
+
+		store.upsert({
+			id: "session-reviewer-1",
+			agentName: "reviewer-1",
+			capability: "reviewer",
+			worktreePath: join(overstoryDir, "worktrees", "reviewer-1"),
+			branchName: "overstory/reviewer-1/test-r1",
+			beadId: "test-r1",
+			tmuxSession: "overstory-testproject-reviewer-1",
+			state: "working",
+			pid: null,
+			parentAgent: "lead-1",
+			depth: 1,
+			runId: null,
+			startedAt: new Date().toISOString(),
+			lastActivity: new Date().toISOString(),
+			escalationLevel: 0,
+			stalledSince: null,
+		});
+
+		// Lead-2 has builders only (bad)
+		store.upsert({
+			id: "session-builder-2",
+			agentName: "builder-2",
+			capability: "builder",
+			worktreePath: join(overstoryDir, "worktrees", "builder-2"),
+			branchName: "overstory/builder-2/test-2",
+			beadId: "test-2",
+			tmuxSession: "overstory-testproject-builder-2",
+			state: "working",
+			pid: null,
+			parentAgent: "lead-2",
+			depth: 1,
+			runId: null,
+			startedAt: new Date().toISOString(),
+			lastActivity: new Date().toISOString(),
+			escalationLevel: 0,
+			stalledSince: null,
+		});
+		store.close();
+
+		const checks = await checkConsistency(config, overstoryDir, mockDeps);
+
+		const reviewerCheck = checks.find((c) => c.name === "reviewer-coverage");
+		expect(reviewerCheck).toBeDefined();
+		expect(reviewerCheck?.status).toBe("warn");
+		expect(reviewerCheck?.details).toBeDefined();
+		// Should contain lead-2 in the details
+		const detailsStr = reviewerCheck?.details?.join(" ");
+		expect(detailsStr).toContain("lead-2");
+	});
 });
