@@ -231,7 +231,10 @@ export async function checkConsistency(
 	// 9. Check reviewer-to-builder ratio per lead
 	const parentGroups = new Map<string, { builders: number; reviewers: number }>();
 	for (const session of storeSessions) {
-		if (session.parentAgent && (session.capability === "builder" || session.capability === "reviewer")) {
+		if (
+			session.parentAgent &&
+			(session.capability === "builder" || session.capability === "reviewer")
+		) {
 			const group = parentGroups.get(session.parentAgent) ?? { builders: 0, reviewers: 0 };
 			if (session.capability === "builder") {
 				group.builders++;
@@ -275,9 +278,10 @@ export async function checkConsistency(
 			name: "reviewer-coverage",
 			category: "consistency",
 			status: "pass",
-			message: parentGroups.size > 0
-				? "All leads have reviewer coverage for builders"
-				: "No builder sessions found (nothing to check)",
+			message:
+				parentGroups.size > 0
+					? "All leads have reviewer coverage for builders"
+					: "No builder sessions found (nothing to check)",
 		});
 	}
 
