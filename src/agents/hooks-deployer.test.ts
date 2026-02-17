@@ -244,7 +244,7 @@ describe("deployHooks", () => {
 		expect(baseHook.hooks[0].command).toContain("--stdin");
 		expect(baseHook.hooks[0].command).toContain("overstory log tool-start");
 		expect(baseHook.hooks[0].command).toContain("stdin-agent");
-		expect(baseHook.hooks[0].command).toContain('read -r INPUT; echo "$INPUT" |');
+		expect(baseHook.hooks[0].command).not.toContain("read -r INPUT");
 	});
 
 	test("PostToolUse hook pipes stdin to overstory log with --stdin flag", async () => {
@@ -259,7 +259,7 @@ describe("deployHooks", () => {
 		expect(postToolUse.hooks[0].command).toContain("--stdin");
 		expect(postToolUse.hooks[0].command).toContain("overstory log tool-end");
 		expect(postToolUse.hooks[0].command).toContain("stdin-agent");
-		expect(postToolUse.hooks[0].command).toContain('read -r INPUT; echo "$INPUT" |');
+		expect(postToolUse.hooks[0].command).not.toContain("read -r INPUT");
 	});
 
 	test("PostToolUse hook includes mail check with debounce", async () => {
@@ -295,7 +295,7 @@ describe("deployHooks", () => {
 		expect(stop.hooks[0].command).toContain("--stdin");
 		expect(stop.hooks[0].command).toContain("overstory log session-end");
 		expect(stop.hooks[0].command).toContain("stdin-agent");
-		expect(stop.hooks[0].command).toContain('read -r INPUT; echo "$INPUT" |');
+		expect(stop.hooks[0].command).not.toContain("read -r INPUT");
 	});
 
 	test("Stop hook includes mulch learn command", async () => {
