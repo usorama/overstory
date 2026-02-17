@@ -89,31 +89,16 @@ export const checkStructure: DoctorCheckFn = async (
 		fixable: missingDirs.length > 0,
 	});
 
-	// Check 4: .gitignore contents
+	// Check 4: .gitignore contents — validate wildcard+whitelist model
 	const gitignorePath = join(overstoryDir, ".gitignore");
 	const expectedEntries = [
-		"worktrees/",
-		"logs/",
-		"mail.db",
-		"mail.db-wal",
-		"mail.db-shm",
-		"metrics.db",
-		"metrics.db-wal",
-		"metrics.db-shm",
-		"events.db",
-		"events.db-wal",
-		"events.db-shm",
-		"sessions.json",
-		"sessions.db",
-		"sessions.db-wal",
-		"sessions.db-shm",
-		"merge-queue.db",
-		"merge-queue.db-wal",
-		"merge-queue.db-shm",
-		"nudge-state.json",
-		"pending-nudges/",
-		"agents/",
-		"specs/",
+		"*",
+		"!.gitignore",
+		"!config.yaml",
+		"!agent-manifest.json",
+		"!hooks.json",
+		"!groups.json",
+		"!agent-defs/",
 	];
 
 	try {

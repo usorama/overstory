@@ -98,28 +98,15 @@ describe("checkStructure", () => {
 		await Bun.write(join(overstoryDir, "hooks.json"), "{}");
 		await Bun.write(
 			join(overstoryDir, ".gitignore"),
-			`worktrees/
-logs/
-mail.db
-mail.db-wal
-mail.db-shm
-metrics.db
-metrics.db-wal
-metrics.db-shm
-events.db
-events.db-wal
-events.db-shm
-sessions.json
-sessions.db
-sessions.db-wal
-sessions.db-shm
-merge-queue.db
-merge-queue.db-wal
-merge-queue.db-shm
-nudge-state.json
-pending-nudges/
-agents/
-specs/
+			`# Wildcard+whitelist: ignore everything, whitelist tracked files
+# Auto-healed by overstory prime on each session start
+*
+!.gitignore
+!config.yaml
+!agent-manifest.json
+!hooks.json
+!groups.json
+!agent-defs/
 `,
 		);
 
@@ -180,8 +167,9 @@ specs/
 		await Bun.write(
 			join(overstoryDir, ".gitignore"),
 			`# Incomplete gitignore
-worktrees/
-logs/
+*
+!.gitignore
+!config.yaml
 `,
 		);
 
