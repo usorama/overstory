@@ -1231,4 +1231,28 @@ try {
 		const data = JSON.parse(event.data ?? "{}");
 		expect(data.summary).toBe("SomeCustomTool");
 	});
+
+	test("tool-end with --stdin handles large payloads (>64KB)", async () => {
+		const payload = {
+			tool_name: "Bash",
+			tool_input: { command: "cat /some/file" },
+			tool_result: "x".repeat(100_000), // 100KB payload
+			session_id: "sess-large-payload",
+		};
+
+		const result = await runLogWithStdin("tool-end", "large-payload-agent", payload);
+		expect(result.exitCode).toBe(0);
+
+		// Verify EventStore received the event with correct tool name
+		const eventsDbPath = join(tempDir, ".overstory", "events.db");
+		const eventStore = createEventStore(eventsDbPath);
+		const events = eventStore.getByAgent("large-payload-agent");
+		eventStore.close();
+
+		expect(events).toHaveLength(1);
+		const event = events[0] as StoredEvent;
+		expect(event.eventType).toBe("tool_end");
+		expect(event.toolName).toBe("Bash");
+		// tool_result is not stored in EventStore (filtered out), but tool_name was parsed correctly
+	});
 });
