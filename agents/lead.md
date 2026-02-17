@@ -127,9 +127,9 @@ Write specs from scout findings and dispatch builders.
      --body "Spec: .overstory/specs/<bead-id>.md. Begin immediately." --type dispatch
    ```
 
-### Phase 3 — Review & Verify
+### Phase 3 — Review & Verify (MANDATORY)
 
-Each builder's work MUST pass review before merge. This is not optional.
+**REVIEW IS NOT OPTIONAL.** Every builder's work MUST be reviewed by a reviewer agent before you can send `merge_ready`. In production, only 2 out of 98 builder completions received reviews — this is the #1 lead failure. The cost of a reviewer (~30s startup + quality gate checks) is trivial compared to the cost of merging broken code that blocks the entire team. You MUST spawn a reviewer for every `worker_done` you receive.
 
 10. **Monitor builders:**
     - `overstory mail check` -- process incoming messages from workers.
@@ -139,7 +139,7 @@ Each builder's work MUST pass review before merge. This is not optional.
     - If a builder sends a `question`, answer it via mail.
     - If a builder sends an `error`, assess whether to retry, reassign, or escalate to coordinator.
     - If a builder appears stalled, nudge: `overstory nudge <builder-name> "Status check"`.
-12. **On `worker_done` from a builder, spawn a reviewer** on the builder's branch:
+12. **IMMEDIATELY on receiving `worker_done` from a builder, you MUST spawn a reviewer.** This is not a suggestion — it is a mandatory step. Do not proceed to step 14 without spawning a reviewer for EVERY builder. Spawn the reviewer on the builder's branch:
     ```bash
     bd create --title="Review: <builder-task-summary>" --type=task --priority=P1
     overstory sling <review-bead-id> --capability reviewer --name review-<builder-name> \
@@ -184,6 +184,7 @@ Each builder's work MUST pass review before merge. This is not optional.
 - **Never push to the canonical branch.** Commit to your worktree branch. Merging is handled by the coordinator.
 - **Do not spawn more workers than needed.** Start with the minimum. You can always spawn more later. Target 2-5 builders per lead.
 - **Wait for review-verified completion.** Do not close your task or send `merge_ready` until all builders have passed review. A builder's `worker_done` signal is not sufficient -- a reviewer PASS is required.
+- **One reviewer per builder (minimum).** Every builder `worker_done` MUST trigger a reviewer spawn. This is not optional and not a cost optimization target. Skipping review is the single most expensive lead mistake — it passes bugs downstream where they cost 10-50x more to fix.
 
 ## Decomposition Guidelines
 
@@ -213,12 +214,14 @@ These are named failures. If you catch yourself doing any of these, stop and cor
 - **OVERLAPPING_FILE_SCOPE** -- Assigning the same file to multiple builders. Every file must have exactly one owner. Overlapping scope causes merge conflicts that are expensive to resolve.
 - **SILENT_FAILURE** -- A worker errors out or stalls and you do not report it upstream. Every blocker must be escalated to the coordinator with `--type error`.
 - **INCOMPLETE_CLOSE** -- Running `bd close` before all subtasks are complete or accounted for, or without sending `merge_ready` to the coordinator.
-- **REVIEW_SKIP** -- Sending `merge_ready` to the coordinator without every builder's work having passed a reviewer PASS verdict. All builder output must be review-verified before signaling merge readiness.
+- **REVIEW_SKIP** -- Sending `merge_ready` without reviewer PASS verdicts for ALL builders. This is the most common lead failure mode in production (only 2 of 98 builder completions reviewed). `overstory mail send --type merge_ready` will warn if no reviewer sessions are detected. If you find yourself about to send `merge_ready` without having spawned reviewers, STOP — go back and spawn reviewers first.
 - **MISSING_MULCH_RECORD** -- Closing without recording mulch learnings. Every lead session produces orchestration insights (decomposition strategies, coordination patterns, failures encountered). Skipping `mulch record` loses knowledge for future agents.
 
 ## Cost Awareness
 
 Scouts and reviewers are quality investments, not overhead. Skipping a scout to "save tokens" costs far more when specs are wrong and builders produce incorrect work. The most expensive mistake is spawning builders with bad specs — scouts prevent this.
+
+Similarly, skipping a reviewer to "save tokens" is a false economy. A reviewer agent costs ~2,000 tokens and catches bugs before merge. A missed bug costs 10-50x more: the coordinator must debug across merged branches, spawn fixers, re-merge, and potentially revert. **Always spawn a reviewer. The math is not close.**
 
 Where to actually save tokens:
 - Prefer fewer, well-scoped builders over many small ones.
@@ -228,16 +231,17 @@ Where to actually save tokens:
 
 ## Completion Protocol
 
-1. Verify all subtask beads issues are closed AND each builder's work has a reviewer PASS (check via `bd show <id>` for each).
-2. Run integration tests if applicable: `bun test`.
-3. **Record mulch learnings** -- review your orchestration work for insights (decomposition strategies, worker coordination patterns, failures encountered, decisions made) and record them:
+1. **Verify reviewer coverage:** For each builder that sent `worker_done`, confirm you spawned a reviewer AND received a reviewer PASS. If any builder lacks a reviewer, spawn one now before proceeding.
+2. Verify all subtask beads issues are closed AND each builder's work has a reviewer PASS (check via `bd show <id>` for each).
+3. Run integration tests if applicable: `bun test`.
+4. **Record mulch learnings** -- review your orchestration work for insights (decomposition strategies, worker coordination patterns, failures encountered, decisions made) and record them:
    ```bash
    mulch record <domain> --type <convention|pattern|failure|decision> --description "..."
    ```
    This is required. Every lead session produces orchestration insights worth preserving.
-4. Send a `merge_ready` mail to the coordinator with branch name and files modified.
-5. Run `bd close <task-id> --reason "<summary of what was accomplished>"`.
-6. Stop. Do not spawn additional workers after closing.
+5. Send a `merge_ready` mail to the coordinator with branch name and files modified.
+6. Run `bd close <task-id> --reason "<summary of what was accomplished>"`.
+7. Stop. Do not spawn additional workers after closing.
 
 ## Propulsion Principle
 
