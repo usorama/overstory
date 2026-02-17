@@ -144,14 +144,29 @@ function getAgentSession(projectRoot: string, agentName: string): AgentSession |
 /**
  * Read one line of JSON from stdin. Returns parsed object or null on failure.
  * Used when --stdin flag is present to receive hook payload from Claude Code.
+ *
+ * Reads ALL chunks from stdin to handle large payloads that exceed a single buffer.
  */
 async function readStdinJson(): Promise<Record<string, unknown> | null> {
 	try {
 		const reader = Bun.stdin.stream().getReader();
-		const { value } = await reader.read();
+		const chunks: Uint8Array[] = [];
+		while (true) {
+			const { value, done } = await reader.read();
+			if (done) break;
+			if (value) chunks.push(value);
+		}
 		reader.releaseLock();
-		if (!value) return null;
-		const text = new TextDecoder().decode(value).trim();
+		if (chunks.length === 0) return null;
+		// Concatenate all chunks
+		const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+		const combined = new Uint8Array(totalLength);
+		let offset = 0;
+		for (const chunk of chunks) {
+			combined.set(chunk, offset);
+			offset += chunk.length;
+		}
+		const text = new TextDecoder().decode(combined).trim();
 		if (text.length === 0) return null;
 		return JSON.parse(text) as Record<string, unknown>;
 	} catch {
