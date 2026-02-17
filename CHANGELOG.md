@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-02-17
+
+### Added
+
+#### Configurable Agent Models
+- `models:` section in `config.yaml` — override the default model (`sonnet`, `opus`, `haiku`) for any agent role (coordinator, supervisor, monitor, etc.)
+- `resolveModel()` helper in agent manifest — resolution chain: config override > manifest default > fallback
+- Supervisor and monitor entries added to `agent-manifest.json` with model and capability metadata
+- `overstory init` now seeds the default `models:` section in generated `config.yaml`
+
+#### Testing
+- Test suite grew from 1805 to 1812 tests across 73 files (4638 expect() calls)
+
 ## [0.5.2] - 2026-02-17
 
 ### Added
@@ -285,7 +298,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Biome configuration for formatting and linting
 - TypeScript strict mode with `noUncheckedIndexedAccess`
 
-[Unreleased]: https://github.com/jayminwest/overstory/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/jayminwest/overstory/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/jayminwest/overstory/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/jayminwest/overstory/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/jayminwest/overstory/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/jayminwest/overstory/compare/v0.4.1...v0.5.0
