@@ -64,7 +64,7 @@ merge:
 	}
 
 	describe("help and validation", () => {
-		test("--help prints help containing 'overstory merge', '--branch', '--all', '--dry-run'", async () => {
+		test("--help prints help containing 'overstory merge', '--branch', '--all', '--dry-run', '--into'", async () => {
 			let output = "";
 			const originalWrite = process.stdout.write.bind(process.stdout);
 			process.stdout.write = (chunk: unknown): boolean => {
@@ -82,6 +82,7 @@ merge:
 			expect(output).toContain("--branch");
 			expect(output).toContain("--all");
 			expect(output).toContain("--dry-run");
+			expect(output).toContain("--into");
 		});
 
 		test("-h prints help", async () => {
@@ -411,6 +412,139 @@ merge:
 			expect(parsed.successCount).toBe(1);
 			expect(parsed.failCount).toBe(0);
 			expect(parsed.count).toBe(1);
+		});
+	});
+
+	describe("--into flag", () => {
+		test("merges into a non-default target branch", async () => {
+			await setupProject(repoDir, defaultBranch);
+
+			// Create a target branch (not the default/canonical branch)
+			await commitFile(repoDir, "src/base.ts", "base content");
+			await runGitInDir(repoDir, ["checkout", "-b", "develop"]);
+			await commitFile(repoDir, "src/develop-marker.ts", "develop marker");
+			await runGitInDir(repoDir, ["checkout", defaultBranch]);
+
+			// Create a feature branch off defaultBranch
+			const branchName = "overstory/builder/bead-into-test";
+			await runGitInDir(repoDir, ["checkout", "-b", branchName]);
+			await commitFile(repoDir, `src/${branchName}.ts`, "feature for develop");
+			await runGitInDir(repoDir, ["checkout", defaultBranch]);
+
+			let output = "";
+			const originalWrite = process.stdout.write.bind(process.stdout);
+			process.stdout.write = (chunk: unknown): boolean => {
+				output += String(chunk);
+				return true;
+			};
+
+			try {
+				await mergeCommand(["--branch", branchName, "--into", "develop", "--json"]);
+			} finally {
+				process.stdout.write = originalWrite;
+			}
+
+			const parsed = JSON.parse(output);
+			expect(parsed.success).toBe(true);
+			expect(parsed.tier).toBe("clean-merge");
+
+			// Verify we ended up on the develop branch after merge
+			const currentBranch = await runGitInDir(repoDir, ["symbolic-ref", "--short", "HEAD"]);
+			expect(currentBranch.trim()).toBe("develop");
+
+			// Verify feature file exists on develop
+			const featureFile = await Bun.file(join(repoDir, `src/${branchName}.ts`)).text();
+			expect(featureFile).toBe("feature for develop");
+
+			// Verify defaultBranch was NOT modified (switch back and check)
+			await runGitInDir(repoDir, ["checkout", defaultBranch]);
+			const featureOnDefault = await Bun.file(join(repoDir, `src/${branchName}.ts`)).exists();
+			expect(featureOnDefault).toBe(false);
+		});
+
+		test("--into with --all merges all pending into target branch", async () => {
+			await setupProject(repoDir, defaultBranch);
+
+			// Create a target branch
+			await commitFile(repoDir, "src/base.ts", "base content");
+			await runGitInDir(repoDir, ["checkout", "-b", "staging"]);
+			await commitFile(repoDir, "src/staging-marker.ts", "staging marker");
+			await runGitInDir(repoDir, ["checkout", defaultBranch]);
+
+			// Create feature branches
+			const branch1 = "overstory/agent1/bead-into-all-1";
+			await runGitInDir(repoDir, ["checkout", "-b", branch1]);
+			await commitFile(repoDir, `src/${branch1}.ts`, "feature 1");
+			await runGitInDir(repoDir, ["checkout", defaultBranch]);
+
+			const branch2 = "overstory/agent2/bead-into-all-2";
+			await runGitInDir(repoDir, ["checkout", "-b", branch2]);
+			await commitFile(repoDir, `src/${branch2}.ts`, "feature 2");
+			await runGitInDir(repoDir, ["checkout", defaultBranch]);
+
+			// Enqueue entries
+			const queuePath = join(repoDir, ".overstory", "merge-queue.db");
+			const queue = createMergeQueue(queuePath);
+			queue.enqueue({
+				branchName: branch1,
+				beadId: "bead-into-all-1",
+				agentName: "agent1",
+				filesModified: [`src/${branch1}.ts`],
+			});
+			queue.enqueue({
+				branchName: branch2,
+				beadId: "bead-into-all-2",
+				agentName: "agent2",
+				filesModified: [`src/${branch2}.ts`],
+			});
+			queue.close();
+
+			let output = "";
+			const originalWrite = process.stdout.write.bind(process.stdout);
+			process.stdout.write = (chunk: unknown): boolean => {
+				output += String(chunk);
+				return true;
+			};
+
+			try {
+				await mergeCommand(["--all", "--into", "staging", "--json"]);
+			} finally {
+				process.stdout.write = originalWrite;
+			}
+
+			const parsed = JSON.parse(output);
+			expect(parsed.successCount).toBe(2);
+			expect(parsed.failCount).toBe(0);
+
+			// Verify we're on staging, not defaultBranch
+			const currentBranch = await runGitInDir(repoDir, ["symbolic-ref", "--short", "HEAD"]);
+			expect(currentBranch.trim()).toBe("staging");
+		});
+
+		test("defaults to canonicalBranch when --into is not specified", async () => {
+			await setupProject(repoDir, defaultBranch);
+			const branchName = "overstory/builder/bead-default-target";
+			await createCleanFeatureBranch(repoDir, branchName);
+
+			let output = "";
+			const originalWrite = process.stdout.write.bind(process.stdout);
+			process.stdout.write = (chunk: unknown): boolean => {
+				output += String(chunk);
+				return true;
+			};
+
+			try {
+				await mergeCommand(["--branch", branchName, "--json"]);
+			} finally {
+				process.stdout.write = originalWrite;
+			}
+
+			const parsed = JSON.parse(output);
+			expect(parsed.success).toBe(true);
+
+			// Verify we ended up on the default branch (the canonical branch)
+			const currentBranch = await runGitInDir(repoDir, ["symbolic-ref", "--short", "HEAD"]);
+			expect(currentBranch.trim()).toBe(defaultBranch);
 		});
 	});
 

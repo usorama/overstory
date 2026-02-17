@@ -314,6 +314,7 @@ overstory nudge <agent> [message]       Send a text nudge to an agent via tmux
 overstory merge                         Merge agent branches into canonical
   --branch <name>                        Specific branch
   --all                                  All completed branches
+  --into <branch>                        Target branch (default: config canonicalBranch)
   --dry-run                              Check for conflicts only
   --json                                 JSON output
 ```

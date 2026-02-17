@@ -143,11 +143,12 @@ function formatDryRun(entry: MergeEntry): string {
  */
 const MERGE_HELP = `overstory merge — Merge agent branches into canonical
 
-Usage: overstory merge --branch <name> | --all [--dry-run] [--json]
+Usage: overstory merge --branch <name> | --all [--into <branch>] [--dry-run] [--json]
 
 Options:
   --branch <name>   Merge a specific branch
   --all             Merge all pending branches in the queue
+  --into <branch>   Target branch to merge into (default: config canonicalBranch)
   --dry-run         Check for conflicts without actually merging
   --json            Output results as JSON
   --help, -h        Show this help`;
@@ -160,6 +161,7 @@ export async function mergeCommand(args: string[]): Promise<void> {
 
 	const branchName = getFlag(args, "--branch");
 	const all = hasFlag(args, "--all");
+	const into = getFlag(args, "--into");
 	const dryRun = hasFlag(args, "--dry-run");
 	const json = hasFlag(args, "--json");
 
@@ -171,6 +173,7 @@ export async function mergeCommand(args: string[]): Promise<void> {
 
 	const cwd = process.cwd();
 	const config = await loadConfig(cwd);
+	const targetBranch = into ?? config.project.canonicalBranch;
 	const queuePath = join(config.project.root, ".overstory", "merge-queue.db");
 	const queue = createMergeQueue(queuePath);
 	const mulchClient = createMulchClient(config.project.root);
@@ -181,9 +184,9 @@ export async function mergeCommand(args: string[]): Promise<void> {
 	});
 
 	if (branchName) {
-		await handleBranch(branchName, queue, resolver, config, dryRun, json);
+		await handleBranch(branchName, queue, resolver, config, targetBranch, dryRun, json);
 	} else {
-		await handleAll(queue, resolver, config, dryRun, json);
+		await handleAll(queue, resolver, config, targetBranch, dryRun, json);
 	}
 }
 
@@ -197,10 +200,11 @@ async function handleBranch(
 	queue: ReturnType<typeof createMergeQueue>,
 	resolver: ReturnType<typeof createMergeResolver>,
 	config: Awaited<ReturnType<typeof loadConfig>>,
+	targetBranch: string,
 	dryRun: boolean,
 	json: boolean,
 ): Promise<void> {
-	const canonicalBranch = config.project.canonicalBranch;
+	const canonicalBranch = targetBranch;
 	const repoRoot = config.project.root;
 
 	// Look for existing entry in the queue
@@ -272,10 +276,11 @@ async function handleAll(
 	queue: ReturnType<typeof createMergeQueue>,
 	resolver: ReturnType<typeof createMergeResolver>,
 	config: Awaited<ReturnType<typeof loadConfig>>,
+	targetBranch: string,
 	dryRun: boolean,
 	json: boolean,
 ): Promise<void> {
-	const canonicalBranch = config.project.canonicalBranch;
+	const canonicalBranch = targetBranch;
 	const repoRoot = config.project.root;
 
 	const pendingEntries = queue.list("pending");
