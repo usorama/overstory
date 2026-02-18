@@ -36,6 +36,7 @@ import { statusCommand } from "./commands/status.ts";
 import { supervisorCommand } from "./commands/supervisor.ts";
 import { traceCommand } from "./commands/trace.ts";
 import { watchCommand } from "./commands/watch.ts";
+import { webDashboardCommand } from "./commands/web-dashboard.ts";
 import { worktreeCommand } from "./commands/worktree.ts";
 import { OverstoryError, WorktreeError } from "./errors.ts";
 import { setQuiet } from "./logging/color.ts";
@@ -76,6 +77,7 @@ Commands:
   replay [options]        Interleaved chronological replay across agents
   costs [options]          Token/cost analysis and breakdown
   metrics                 Show session metrics
+  web [options]            Web dashboard for agent fleet monitoring
 
 Options:
   --help, -h              Show this help
@@ -115,6 +117,7 @@ const COMMANDS = [
 	"run",
 	"costs",
 	"metrics",
+	"web",
 ];
 
 function editDistance(a: string, b: string): number {
@@ -275,6 +278,9 @@ async function main(): Promise<void> {
 			break;
 		case "metrics":
 			await metricsCommand(commandArgs);
+			break;
+		case "web":
+			await webDashboardCommand(commandArgs);
 			break;
 		default: {
 			process.stderr.write(`Unknown command: ${command}\n`);
