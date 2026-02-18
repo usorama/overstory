@@ -215,8 +215,9 @@ describe("coordination protocol: full pipeline", () => {
 		expect(leadInbox[0]?.type).toBe("worker_done");
 		expect(leadInbox[0]?.from).toBe("builder-alpha");
 
-		// Parse the payload
-		const donePayload = JSON.parse(leadInbox[0]?.payload ?? "{}");
+		// Parse the payload — assert it exists before parsing
+		expect(leadInbox[0]?.payload).toBeTruthy();
+		const donePayload = JSON.parse(leadInbox[0]?.payload as string);
 		expect(donePayload.beadId).toBe("task-001");
 		expect(donePayload.branch).toBe("overstory/builder-alpha/task-001");
 
@@ -241,7 +242,8 @@ describe("coordination protocol: full pipeline", () => {
 		expect(orchInbox.length).toBe(1);
 		expect(orchInbox[0]?.type).toBe("merge_ready");
 
-		const mergePayload = JSON.parse(orchInbox[0]?.payload ?? "{}");
+		expect(orchInbox[0]?.payload).toBeTruthy();
+		const mergePayload = JSON.parse(orchInbox[0]?.payload as string);
 		expect(mergePayload.branch).toBe("overstory/builder-alpha/task-001");
 
 		// Step 5: After merge, orchestrator sends merged confirmation
@@ -299,8 +301,11 @@ describe("coordination protocol: full pipeline", () => {
 		expect(peeked?.branchName).toBe("overstory/builder-1/task-100");
 		expect(peeked?.status).toBe("pending");
 
+		// Narrow to non-null after assertion
+		const peekedEntry = peeked as MergeEntry;
+
 		// Mark as merging
-		queue.updateStatus("overstory/builder-1/task-100", "merging");
+		queue.updateStatus(peekedEntry.branchName, "merging");
 
 		// Resolve via real git merge (Tier 1: clean merge)
 		const resolver = createMergeResolver({
@@ -308,14 +313,13 @@ describe("coordination protocol: full pipeline", () => {
 			reimagineEnabled: false,
 		});
 
-		const result = await resolver.resolve(peeked as MergeEntry, baseBranch, tempDir);
+		const result = await resolver.resolve(peekedEntry, baseBranch, tempDir);
 		expect(result.success).toBe(true);
 		expect(result.tier).toBe("clean-merge");
 		expect(result.conflictFiles).toEqual([]);
 
 		// Update queue status to merged
-		const peekedBranch = peeked?.branchName ?? "";
-		queue.updateStatus(peekedBranch, "merged", "clean-merge");
+		queue.updateStatus(peekedEntry.branchName, "merged", "clean-merge");
 
 		// Verify entry is now "merged" (not pending)
 		const merged = queue.list("merged");
@@ -390,30 +394,33 @@ describe("coordination protocol: full pipeline", () => {
 
 		// Process first (a)
 		const first = queue.peek();
+		expect(first).not.toBeNull();
 		expect(first?.agentName).toBe("builder-a");
-		const firstBranch = first?.branchName ?? "";
-		queue.updateStatus(firstBranch, "merging");
-		const resultA = await resolver.resolve(first as MergeEntry, baseBranch, tempDir);
+		const firstEntry = first as MergeEntry;
+		queue.updateStatus(firstEntry.branchName, "merging");
+		const resultA = await resolver.resolve(firstEntry, baseBranch, tempDir);
 		expect(resultA.success).toBe(true);
-		queue.updateStatus(firstBranch, "merged", "clean-merge");
+		queue.updateStatus(firstEntry.branchName, "merged", "clean-merge");
 
 		// Process second (b)
 		const second = queue.peek();
+		expect(second).not.toBeNull();
 		expect(second?.agentName).toBe("builder-b");
-		const secondBranch = second?.branchName ?? "";
-		queue.updateStatus(secondBranch, "merging");
-		const resultB = await resolver.resolve(second as MergeEntry, baseBranch, tempDir);
+		const secondEntry = second as MergeEntry;
+		queue.updateStatus(secondEntry.branchName, "merging");
+		const resultB = await resolver.resolve(secondEntry, baseBranch, tempDir);
 		expect(resultB.success).toBe(true);
-		queue.updateStatus(secondBranch, "merged", "clean-merge");
+		queue.updateStatus(secondEntry.branchName, "merged", "clean-merge");
 
 		// Process third (c)
 		const third = queue.peek();
+		expect(third).not.toBeNull();
 		expect(third?.agentName).toBe("builder-c");
-		const thirdBranch = third?.branchName ?? "";
-		queue.updateStatus(thirdBranch, "merging");
-		const resultC = await resolver.resolve(third as MergeEntry, baseBranch, tempDir);
+		const thirdEntry = third as MergeEntry;
+		queue.updateStatus(thirdEntry.branchName, "merging");
+		const resultC = await resolver.resolve(thirdEntry, baseBranch, tempDir);
 		expect(resultC.success).toBe(true);
-		queue.updateStatus(thirdBranch, "merged", "clean-merge");
+		queue.updateStatus(thirdEntry.branchName, "merged", "clean-merge");
 
 		// All merged, no more pending
 		expect(queue.peek()).toBeNull();
@@ -511,9 +518,9 @@ describe("coordination protocol: full pipeline", () => {
 		const runEvents = eventStore.getByRun("run-1");
 		expect(runEvents.length).toBe(3);
 
-		// Tool stats
+		// Tool stats — exactly 1 tool group (Read) for builder-1
 		const stats = eventStore.getToolStats({ agentName: "builder-1" });
-		expect(stats.length).toBeGreaterThan(0);
+		expect(stats.length).toBe(1);
 
 		eventStore.close();
 	});
@@ -587,7 +594,7 @@ describe("coordination protocol: full pipeline", () => {
 
 		// 5. Lead processes worker_done → sends merge_ready
 		const leadInbox = mail.check("lead-x");
-		expect(leadInbox.length).toBeGreaterThan(0);
+		expect(leadInbox.length).toBe(1);
 
 		mail.send({
 			from: "lead-x",
@@ -621,18 +628,18 @@ describe("coordination protocol: full pipeline", () => {
 
 		const toMerge = queue.peek();
 		expect(toMerge).not.toBeNull();
-		const mergeBranch = toMerge?.branchName ?? "";
-		queue.updateStatus(mergeBranch, "merging");
+		const mergeEntry = toMerge as MergeEntry;
+		queue.updateStatus(mergeEntry.branchName, "merging");
 
 		const resolver = createMergeResolver({
 			aiResolveEnabled: false,
 			reimagineEnabled: false,
 		});
-		const mergeResult = await resolver.resolve(toMerge as MergeEntry, baseBranch, tempDir);
+		const mergeResult = await resolver.resolve(mergeEntry, baseBranch, tempDir);
 		expect(mergeResult.success).toBe(true);
 		expect(mergeResult.tier).toBe("clean-merge");
 
-		queue.updateStatus(mergeBranch, "merged", "clean-merge");
+		queue.updateStatus(mergeEntry.branchName, "merged", "clean-merge");
 
 		// 7. Send merged confirmation
 		mail.send({

@@ -1,12 +1,13 @@
 /**
- * Integration test: Insights analyzer lifecycle hook.
+ * Integration test: Insights analyzer with real EventStore.
  *
- * Verifies that analyzeSessionInsights() is properly connected into the
- * session-end lifecycle via autoRecordExpertise(), and that it produces
- * correct InsightAnalysis results from real EventStore data.
+ * Exercises analyzeSessionInsights() and inferDomain() against real SQLite
+ * EventStore data. Verifies tool profile generation, hot file detection,
+ * error pattern analysis, and domain inference.
  *
- * Uses real SQLite databases and EventStore. Mulch CLI calls are not tested
- * here (they require the external mulch binary and produce side effects).
+ * Uses real SQLite databases and EventStore. Mulch CLI calls and the
+ * autoRecordExpertise() lifecycle hook are not tested here (they require
+ * the external mulch binary and produce side effects).
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -126,8 +127,8 @@ describe("analyzeSessionInsights with real EventStore", () => {
 			domains: ["cli"],
 		});
 
-		// Should produce at least 1 insight (tool workflow)
-		expect(analysis.insights.length).toBeGreaterThanOrEqual(1);
+		// Should produce exactly 1 insight (tool workflow — no hot files, no errors)
+		expect(analysis.insights.length).toBe(1);
 		const workflowInsight = analysis.insights.find((i) => i.description.includes("tool profile"));
 		expect(workflowInsight).toBeDefined();
 		expect(workflowInsight?.description).toContain("read-heavy");
@@ -245,6 +246,7 @@ describe("analyzeSessionInsights with real EventStore", () => {
 		expect(errorInsight?.type).toBe("failure");
 		expect(errorInsight?.description).toContain("2 error");
 		expect(errorInsight?.description).toContain("Bash");
+		expect(errorInsight?.description).toContain("Edit");
 	});
 
 	test("returns empty insights for sessions with < 10 tool calls and no errors", () => {
