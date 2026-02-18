@@ -37,8 +37,8 @@ export const DEFAULT_CONFIG: OverstoryConfig = {
 	watchdog: {
 		tier0Enabled: true, // Tier 0: Mechanical daemon
 		tier0IntervalMs: 30_000,
-		tier1Enabled: false, // Tier 1: Triage agent (AI analysis)
-		tier2Enabled: false, // Tier 2: Monitor agent (not yet implemented)
+		tier1Enabled: false, // Tier 1: Triage agent (AI analysis via claude --print)
+		tier2Enabled: false, // Tier 2: Monitor agent (persistent fleet patrol)
 		staleThresholdMs: 300_000, // 5 minutes
 		zombieThresholdMs: 600_000, // 10 minutes
 		nudgeIntervalMs: 60_000, // 1 minute between progressive nudge stages
