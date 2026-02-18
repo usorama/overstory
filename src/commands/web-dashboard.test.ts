@@ -1,8 +1,8 @@
 /**
  * Tests for web dashboard command.
  *
- * Exercises API response shapes, SSE event format, arg parsing, and
- * server lifecycle using real SQLite databases in temp directories.
+ * Exercises API response shapes, SSE event format, and arg parsing
+ * using real SQLite databases in temp directories.
  * HTML rendering is not tested (visual only, too brittle).
  */
 

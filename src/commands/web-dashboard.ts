@@ -2,8 +2,9 @@
  * CLI command: overstory web [--port N] [--host 0.0.0.0] [--json]
  *
  * Read-only web dashboard for monitoring agent fleet status.
- * Uses Bun.serve() (built-in, zero deps) with inline HTML/CSS/JS
- * and Server-Sent Events (SSE) for real-time updates.
+ * Uses Bun.serve() (built-in, zero deps) with inline HTML/CSS/JS.
+ * SSE streams real-time status, events, mail, merge, and cost updates.
+ * Config is fetched via REST API only (no live updates).
  */
 
 import { join } from "node:path";
@@ -58,12 +59,17 @@ async function loadWebDashboardData(
 		const eventsDbPath = join(overstoryDir, "events.db");
 		if (await Bun.file(eventsDbPath).exists()) {
 			const store = createEventStore(eventsDbPath);
-			const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-			events = store.getTimeline({ since, limit: eventLimit });
-			store.close();
+			try {
+				const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+				events = store.getTimeline({ since, limit: eventLimit });
+			} finally {
+				store.close();
+			}
 		}
-	} catch {
-		// events.db might not exist
+	} catch (err: unknown) {
+		console.error(
+			`[web-dashboard] Failed to load events: ${err instanceof Error ? err.message : err}`,
+		);
 	}
 
 	let mail: MailMessage[] = [];
@@ -71,11 +77,16 @@ async function loadWebDashboardData(
 		const mailDbPath = join(overstoryDir, "mail.db");
 		if (await Bun.file(mailDbPath).exists()) {
 			const mailStore = createMailStore(mailDbPath);
-			mail = mailStore.getAll().slice(0, mailLimit);
-			mailStore.close();
+			try {
+				mail = mailStore.getAll().slice(0, mailLimit);
+			} finally {
+				mailStore.close();
+			}
 		}
-	} catch {
-		// mail.db might not exist
+	} catch (err: unknown) {
+		console.error(
+			`[web-dashboard] Failed to load mail: ${err instanceof Error ? err.message : err}`,
+		);
 	}
 
 	let mergeQueue: MergeEntry[] = [];
@@ -83,11 +94,16 @@ async function loadWebDashboardData(
 		const queuePath = join(overstoryDir, "merge-queue.db");
 		if (await Bun.file(queuePath).exists()) {
 			const queue = createMergeQueue(queuePath);
-			mergeQueue = queue.list();
-			queue.close();
+			try {
+				mergeQueue = queue.list();
+			} finally {
+				queue.close();
+			}
 		}
-	} catch {
-		// merge-queue.db might not exist
+	} catch (err: unknown) {
+		console.error(
+			`[web-dashboard] Failed to load merge queue: ${err instanceof Error ? err.message : err}`,
+		);
 	}
 
 	let costs: SessionMetrics[] = [];
@@ -95,11 +111,16 @@ async function loadWebDashboardData(
 		const metricsDbPath = join(overstoryDir, "metrics.db");
 		if (await Bun.file(metricsDbPath).exists()) {
 			const metricsStore = createMetricsStore(metricsDbPath);
-			costs = metricsStore.getRecentSessions(costLimit);
-			metricsStore.close();
+			try {
+				costs = metricsStore.getRecentSessions(costLimit);
+			} finally {
+				metricsStore.close();
+			}
 		}
-	} catch {
-		// metrics.db might not exist
+	} catch (err: unknown) {
+		console.error(
+			`[web-dashboard] Failed to load metrics: ${err instanceof Error ? err.message : err}`,
+		);
 	}
 
 	let config: Record<string, unknown> = {};
@@ -117,8 +138,10 @@ async function loadWebDashboardData(
 			watchdogTier1: loaded.watchdog.tier1Enabled,
 			watchdogTier2: loaded.watchdog.tier2Enabled,
 		};
-	} catch {
-		// config might not exist
+	} catch (err: unknown) {
+		console.error(
+			`[web-dashboard] Failed to load config: ${err instanceof Error ? err.message : err}`,
+		);
 	}
 
 	return { status, events, mail, mergeQueue, costs, config };
@@ -129,20 +152,24 @@ async function loadWebDashboardData(
 function jsonResponse(data: unknown, status = 200): Response {
 	return new Response(JSON.stringify(data), {
 		status,
-		headers: {
-			"Content-Type": "application/json",
-			"Access-Control-Allow-Origin": "*",
-		},
+		headers: { "Content-Type": "application/json" },
 	});
 }
 
 async function handleApiStatus(root: string): Promise<Response> {
-	const status = await gatherStatus(root, "orchestrator", true);
-	return jsonResponse(status);
+	try {
+		const status = await gatherStatus(root, "orchestrator", true);
+		return jsonResponse(status);
+	} catch (err: unknown) {
+		const msg = err instanceof Error ? err.message : String(err);
+		console.error(`[web-dashboard] /api/status failed: ${msg}`);
+		return jsonResponse({ error: "Failed to load status", detail: msg }, 500);
+	}
 }
 
 async function handleApiEvents(root: string, url: URL): Promise<Response> {
-	const limit = Number.parseInt(url.searchParams.get("limit") ?? "50", 10);
+	const rawLimit = Number.parseInt(url.searchParams.get("limit") ?? "50", 10);
+	const limit = Number.isNaN(rawLimit) || rawLimit < 1 ? 50 : Math.min(rawLimit, 1000);
 	const since = url.searchParams.get("since") ?? undefined;
 	const agent = url.searchParams.get("agent") ?? undefined;
 
@@ -153,20 +180,30 @@ async function handleApiEvents(root: string, url: URL): Promise<Response> {
 		return jsonResponse([]);
 	}
 
-	const store = createEventStore(eventsDbPath);
-	let events: StoredEvent[];
-	if (agent) {
-		events = store.getByAgent(agent, { limit, since });
-	} else {
-		const sinceTs = since ?? new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-		events = store.getTimeline({ since: sinceTs, limit });
+	try {
+		const store = createEventStore(eventsDbPath);
+		try {
+			let events: StoredEvent[];
+			if (agent) {
+				events = store.getByAgent(agent, { limit, since });
+			} else {
+				const sinceTs = since ?? new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+				events = store.getTimeline({ since: sinceTs, limit });
+			}
+			return jsonResponse(events);
+		} finally {
+			store.close();
+		}
+	} catch (err: unknown) {
+		const msg = err instanceof Error ? err.message : String(err);
+		console.error(`[web-dashboard] /api/events failed: ${msg}`);
+		return jsonResponse({ error: "Failed to load events", detail: msg }, 500);
 	}
-	store.close();
-	return jsonResponse(events);
 }
 
 async function handleApiMail(root: string, url: URL): Promise<Response> {
-	const limit = Number.parseInt(url.searchParams.get("limit") ?? "20", 10);
+	const rawLimit = Number.parseInt(url.searchParams.get("limit") ?? "20", 10);
+	const limit = Number.isNaN(rawLimit) || rawLimit < 1 ? 20 : Math.min(rawLimit, 1000);
 	const from = url.searchParams.get("from") ?? undefined;
 	const to = url.searchParams.get("to") ?? undefined;
 
@@ -177,10 +214,19 @@ async function handleApiMail(root: string, url: URL): Promise<Response> {
 		return jsonResponse([]);
 	}
 
-	const mailStore = createMailStore(mailDbPath);
-	const messages = mailStore.getAll({ from, to }).slice(0, limit);
-	mailStore.close();
-	return jsonResponse(messages);
+	try {
+		const mailStore = createMailStore(mailDbPath);
+		try {
+			const messages = mailStore.getAll({ from, to }).slice(0, limit);
+			return jsonResponse(messages);
+		} finally {
+			mailStore.close();
+		}
+	} catch (err: unknown) {
+		const msg = err instanceof Error ? err.message : String(err);
+		console.error(`[web-dashboard] /api/mail failed: ${msg}`);
+		return jsonResponse({ error: "Failed to load mail", detail: msg }, 500);
+	}
 }
 
 async function handleApiMerge(root: string): Promise<Response> {
@@ -191,14 +237,24 @@ async function handleApiMerge(root: string): Promise<Response> {
 		return jsonResponse([]);
 	}
 
-	const queue = createMergeQueue(queuePath);
-	const entries = queue.list();
-	queue.close();
-	return jsonResponse(entries);
+	try {
+		const queue = createMergeQueue(queuePath);
+		try {
+			const entries = queue.list();
+			return jsonResponse(entries);
+		} finally {
+			queue.close();
+		}
+	} catch (err: unknown) {
+		const msg = err instanceof Error ? err.message : String(err);
+		console.error(`[web-dashboard] /api/merge failed: ${msg}`);
+		return jsonResponse({ error: "Failed to load merge queue", detail: msg }, 500);
+	}
 }
 
 async function handleApiCosts(root: string, url: URL): Promise<Response> {
-	const limit = Number.parseInt(url.searchParams.get("limit") ?? "20", 10);
+	const rawLimit = Number.parseInt(url.searchParams.get("limit") ?? "20", 10);
+	const limit = Number.isNaN(rawLimit) || rawLimit < 1 ? 20 : Math.min(rawLimit, 1000);
 
 	const overstoryDir = join(root, ".overstory");
 	const metricsDbPath = join(overstoryDir, "metrics.db");
@@ -207,18 +263,27 @@ async function handleApiCosts(root: string, url: URL): Promise<Response> {
 		return jsonResponse({ sessions: [], totals: { tokens: 0, cost: 0 } });
 	}
 
-	const metricsStore = createMetricsStore(metricsDbPath);
-	const sessions = metricsStore.getRecentSessions(limit);
-	metricsStore.close();
+	try {
+		const metricsStore = createMetricsStore(metricsDbPath);
+		try {
+			const sessions = metricsStore.getRecentSessions(limit);
 
-	let totalTokens = 0;
-	let totalCost = 0;
-	for (const s of sessions) {
-		totalTokens += s.inputTokens + s.outputTokens;
-		totalCost += s.estimatedCostUsd ?? 0;
+			let totalTokens = 0;
+			let totalCost = 0;
+			for (const s of sessions) {
+				totalTokens += s.inputTokens + s.outputTokens;
+				totalCost += s.estimatedCostUsd ?? 0;
+			}
+
+			return jsonResponse({ sessions, totals: { tokens: totalTokens, cost: totalCost } });
+		} finally {
+			metricsStore.close();
+		}
+	} catch (err: unknown) {
+		const msg = err instanceof Error ? err.message : String(err);
+		console.error(`[web-dashboard] /api/costs failed: ${msg}`);
+		return jsonResponse({ error: "Failed to load costs", detail: msg }, 500);
 	}
-
-	return jsonResponse({ sessions, totals: { tokens: totalTokens, cost: totalCost } });
 }
 
 async function handleApiConfig(root: string): Promise<Response> {
@@ -236,12 +301,15 @@ async function handleApiConfig(root: string): Promise<Response> {
 			watchdogTier1: loaded.watchdog.tier1Enabled,
 			watchdogTier2: loaded.watchdog.tier2Enabled,
 		});
-	} catch {
+	} catch (err: unknown) {
+		console.error(
+			`[web-dashboard] /api/config failed: ${err instanceof Error ? err.message : err}`,
+		);
 		return jsonResponse({});
 	}
 }
 
-// ─── SSE Stream ──────────────────────────────────────────────────────────────
+// ─── SSE Stream (status, events, mail, merge, costs) ────────────────────────
 
 function handleSSE(root: string): Response {
 	let interval: ReturnType<typeof setInterval> | null = null;
@@ -254,11 +322,15 @@ function handleSSE(root: string): Response {
 				const payload = `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
 				try {
 					controller.enqueue(encoder.encode(payload));
-				} catch {
-					// Stream may be closed
+				} catch (err: unknown) {
+					// Stream closed or enqueue failed — stop polling
 					if (interval) {
 						clearInterval(interval);
 						interval = null;
+					}
+					const msg = err instanceof Error ? err.message : String(err);
+					if (!msg.includes("enqueue") && !msg.includes("closed")) {
+						console.error(`[web-dashboard] SSE write failed: ${msg}`);
 					}
 				}
 			};
@@ -267,16 +339,22 @@ function handleSSE(root: string): Response {
 				try {
 					const data = await loadWebDashboardData(root);
 					sendEvent("status", data.status);
+					sendEvent("events", data.events);
 					sendEvent("mail", data.mail);
 					sendEvent("merge", data.mergeQueue);
 					sendEvent("costs", data.costs);
-				} catch {
-					// Swallow errors during polling
+				} catch (err: unknown) {
+					const msg = err instanceof Error ? err.message : String(err);
+					console.error(`[web-dashboard] SSE poll failed: ${msg}`);
+					sendEvent("error", {
+						message: msg,
+						timestamp: new Date().toISOString(),
+					});
 				}
 			};
 
-			// Initial push
-			poll();
+			// Initial push — fire-and-forget, errors handled inside poll()
+			poll().catch(() => {});
 
 			interval = setInterval(poll, SSE_POLL_INTERVAL_MS);
 		},
@@ -293,7 +371,6 @@ function handleSSE(root: string): Response {
 			"Content-Type": "text/event-stream",
 			"Cache-Control": "no-cache",
 			Connection: "keep-alive",
-			"Access-Control-Allow-Origin": "*",
 		},
 	});
 }
@@ -545,6 +622,13 @@ tr:last-child td { border-bottom: none; }
 <script>
 const $ = (id) => document.getElementById(id);
 
+function esc(s) {
+  if (s == null) return '';
+  const d = document.createElement('div');
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+
 function formatDuration(ms) {
   const s = Math.floor(ms / 1000);
   if (s < 60) return s + "s";
@@ -591,15 +675,33 @@ function renderStatus(data) {
     const end = (a.state === "completed" || a.state === "zombie") ? new Date(a.lastActivity).getTime() : now;
     const dur = formatDuration(end - new Date(a.startedAt).getTime());
     html += '<tr>';
-    html += '<td>' + a.agentName + '</td>';
-    html += '<td>' + a.capability + '</td>';
-    html += '<td><span class="state-badge state-' + a.state + '">' + a.state + '</span></td>';
-    html += '<td>' + (a.beadId || '-') + '</td>';
+    html += '<td>' + esc(a.agentName) + '</td>';
+    html += '<td>' + esc(a.capability) + '</td>';
+    html += '<td><span class="state-badge state-' + esc(a.state) + '">' + esc(a.state) + '</span></td>';
+    html += '<td>' + esc(a.beadId || '-') + '</td>';
     html += '<td>' + dur + '</td>';
     html += '</tr>';
   }
   html += '</table>';
   $("agent-table-container").innerHTML = html;
+}
+
+function renderEvents(events) {
+  $("event-count").textContent = events.length;
+  if (!events || events.length === 0) {
+    $("event-list").innerHTML = '<p class="empty">No events</p>';
+    return;
+  }
+  let html = '';
+  for (const ev of events.slice(0, 50)) {
+    html += '<div class="event-item">';
+    html += '<span class="event-time">' + timeAgo(ev.createdAt) + '</span>';
+    html += '<span class="event-agent">' + esc(ev.agentName) + '</span>';
+    html += '<span class="event-type">' + esc(ev.eventType) + '</span>';
+    if (ev.toolName) html += '<span>' + esc(ev.toolName) + '</span>';
+    html += '</div>';
+  }
+  $("event-list").innerHTML = html;
 }
 
 function renderMail(messages) {
@@ -611,10 +713,10 @@ function renderMail(messages) {
   let html = '<table><tr><th>From</th><th>To</th><th>Subject</th><th>Type</th><th>Time</th></tr>';
   for (const m of messages) {
     html += '<tr>';
-    html += '<td>' + m.from + '</td>';
-    html += '<td>' + m.to + '</td>';
-    html += '<td class="priority-' + m.priority + '">' + m.subject + '</td>';
-    html += '<td><span class="state-badge state-' + (m.type === "error" ? "stalled" : "working") + '">' + m.type + '</span></td>';
+    html += '<td>' + esc(m.from) + '</td>';
+    html += '<td>' + esc(m.to) + '</td>';
+    html += '<td class="priority-' + esc(m.priority) + '">' + esc(m.subject) + '</td>';
+    html += '<td><span class="state-badge state-' + (m.type === "error" ? "stalled" : "working") + '">' + esc(m.type) + '</span></td>';
     html += '<td>' + timeAgo(m.createdAt) + '</td>';
     html += '</tr>';
   }
@@ -631,10 +733,10 @@ function renderMerge(entries) {
   let html = '<table><tr><th>Branch</th><th>Agent</th><th>Status</th><th>Tier</th></tr>';
   for (const e of entries) {
     html += '<tr>';
-    html += '<td>' + e.branchName + '</td>';
-    html += '<td>' + e.agentName + '</td>';
-    html += '<td><span class="state-badge state-' + e.status + '">' + e.status + '</span></td>';
-    html += '<td>' + (e.resolvedTier || '-') + '</td>';
+    html += '<td>' + esc(e.branchName) + '</td>';
+    html += '<td>' + esc(e.agentName) + '</td>';
+    html += '<td><span class="state-badge state-' + esc(e.status) + '">' + esc(e.status) + '</span></td>';
+    html += '<td>' + esc(e.resolvedTier || '-') + '</td>';
     html += '</tr>';
   }
   html += '</table>';
@@ -652,8 +754,8 @@ function renderCosts(data) {
   for (const s of data.sessions.slice(0, 10)) {
     const tokens = s.inputTokens + s.outputTokens;
     html += '<tr>';
-    html += '<td>' + s.agentName + '</td>';
-    html += '<td>' + s.capability + '</td>';
+    html += '<td>' + esc(s.agentName) + '</td>';
+    html += '<td>' + esc(s.capability) + '</td>';
     html += '<td>' + tokens.toLocaleString() + '</td>';
     html += '<td>$' + (s.estimatedCostUsd || 0).toFixed(4) + '</td>';
     html += '<td>' + formatDuration(s.durationMs) + '</td>';
@@ -691,6 +793,10 @@ function connectSSE() {
     renderMerge(JSON.parse(e.data));
   });
 
+  es.addEventListener("events", (e) => {
+    renderEvents(JSON.parse(e.data));
+  });
+
   es.addEventListener("costs", (e) => {
     renderCosts(JSON.parse(e.data));
   });
@@ -709,13 +815,15 @@ function connectSSE() {
 // Initial data load via fetch, then connect SSE
 async function init() {
   try {
-    const [statusRes, mailRes, mergeRes, costsRes] = await Promise.all([
+    const [statusRes, eventsRes, mailRes, mergeRes, costsRes] = await Promise.all([
       fetch("/api/status"),
+      fetch("/api/events"),
       fetch("/api/mail"),
       fetch("/api/merge"),
       fetch("/api/costs"),
     ]);
     renderStatus(await statusRes.json());
+    renderEvents(await eventsRes.json());
     renderMail(await mailRes.json());
     renderMerge(await mergeRes.json());
     renderCosts(await costsRes.json());
@@ -766,6 +874,13 @@ export function createServer(opts: WebDashboardOptions): ReturnType<typeof Bun.s
 
 			return new Response("Not found", { status: 404 });
 		},
+		error(err) {
+			console.error(`[web-dashboard] Unhandled server error: ${err.message}`);
+			return new Response(JSON.stringify({ error: err.message }), {
+				status: 500,
+				headers: { "Content-Type": "application/json" },
+			});
+		},
 	});
 
 	return server;
@@ -787,7 +902,7 @@ Options:
 The dashboard provides:
   - Fleet overview with agent counts by state
   - Per-agent status grid with duration and task info
-  - Event timeline with real-time updates via SSE
+  - Event timeline with real-time updates
   - Merge queue status
   - Token/cost summary
   - Recent mail messages
@@ -836,6 +951,6 @@ export async function webDashboardCommand(args: string[]): Promise<void> {
 		process.exit(0);
 	});
 
-	// Keep the process alive
+	// Bun.serve() does not block; await a never-resolving promise to keep alive until SIGINT
 	await new Promise(() => {});
 }
