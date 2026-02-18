@@ -14,7 +14,13 @@ import { createEventStore } from "../events/store.ts";
 import { createMailStore } from "../mail/store.ts";
 import { createMergeQueue } from "../merge/queue.ts";
 import { createMetricsStore } from "../metrics/store.ts";
-import type { MailMessage, MergeEntry, SessionMetrics, StoredEvent } from "../types.ts";
+import type {
+	MailMessage,
+	MergeEntry,
+	OverstoryConfig,
+	SessionMetrics,
+	StoredEvent,
+} from "../types.ts";
 import { gatherStatus, type StatusData } from "./status.ts";
 
 const DEFAULT_PORT = 8420;
@@ -35,13 +41,41 @@ function hasFlag(args: string[], flag: string): boolean {
 
 // ─── Data Loading ────────────────────────────────────────────────────────────
 
+interface SanitizedConfig {
+	projectName: string;
+	canonicalBranch: string;
+	maxConcurrent: number;
+	maxDepth: number;
+	beadsEnabled: boolean;
+	mulchEnabled: boolean;
+	mergeAiResolve: boolean;
+	watchdogTier0: boolean;
+	watchdogTier1: boolean;
+	watchdogTier2: boolean;
+}
+
 interface WebDashboardData {
 	status: StatusData;
 	events: StoredEvent[];
 	mail: MailMessage[];
 	mergeQueue: MergeEntry[];
 	costs: SessionMetrics[];
-	config: Record<string, unknown>;
+	config: SanitizedConfig | null;
+}
+
+function sanitizeConfig(loaded: OverstoryConfig): SanitizedConfig {
+	return {
+		projectName: loaded.project.name,
+		canonicalBranch: loaded.project.canonicalBranch,
+		maxConcurrent: loaded.agents.maxConcurrent,
+		maxDepth: loaded.agents.maxDepth,
+		beadsEnabled: loaded.beads.enabled,
+		mulchEnabled: loaded.mulch.enabled,
+		mergeAiResolve: loaded.merge.aiResolveEnabled,
+		watchdogTier0: loaded.watchdog.tier0Enabled,
+		watchdogTier1: loaded.watchdog.tier1Enabled,
+		watchdogTier2: loaded.watchdog.tier2Enabled,
+	};
 }
 
 async function loadWebDashboardData(
@@ -137,21 +171,10 @@ async function loadWebDashboardData(
 		);
 	}
 
-	let config: Record<string, unknown> = {};
+	let config: SanitizedConfig | null = null;
 	try {
 		const loaded = await loadConfig(root);
-		config = {
-			projectName: loaded.project.name,
-			canonicalBranch: loaded.project.canonicalBranch,
-			maxConcurrent: loaded.agents.maxConcurrent,
-			maxDepth: loaded.agents.maxDepth,
-			beadsEnabled: loaded.beads.enabled,
-			mulchEnabled: loaded.mulch.enabled,
-			mergeAiResolve: loaded.merge.aiResolveEnabled,
-			watchdogTier0: loaded.watchdog.tier0Enabled,
-			watchdogTier1: loaded.watchdog.tier1Enabled,
-			watchdogTier2: loaded.watchdog.tier2Enabled,
-		};
+		config = sanitizeConfig(loaded);
 	} catch (err: unknown) {
 		console.error(
 			`[web-dashboard] Failed to load config: ${err instanceof Error ? err.message : err}`,
@@ -303,18 +326,7 @@ async function handleApiCosts(root: string, url: URL): Promise<Response> {
 async function handleApiConfig(root: string): Promise<Response> {
 	try {
 		const loaded = await loadConfig(root);
-		return jsonResponse({
-			projectName: loaded.project.name,
-			canonicalBranch: loaded.project.canonicalBranch,
-			maxConcurrent: loaded.agents.maxConcurrent,
-			maxDepth: loaded.agents.maxDepth,
-			beadsEnabled: loaded.beads.enabled,
-			mulchEnabled: loaded.mulch.enabled,
-			mergeAiResolve: loaded.merge.aiResolveEnabled,
-			watchdogTier0: loaded.watchdog.tier0Enabled,
-			watchdogTier1: loaded.watchdog.tier1Enabled,
-			watchdogTier2: loaded.watchdog.tier2Enabled,
-		});
+		return jsonResponse(sanitizeConfig(loaded));
 	} catch (err: unknown) {
 		const msg = err instanceof Error ? err.message : String(err);
 		console.error(`[web-dashboard] /api/config failed: ${msg}`);
@@ -333,8 +345,8 @@ function handleSSE(root: string): Response {
 			const encoder = new TextEncoder();
 
 			const sendEvent = (eventType: string, data: unknown) => {
-				const payload = `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
 				try {
+					const payload = `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
 					controller.enqueue(encoder.encode(payload));
 				} catch (err: unknown) {
 					// Stream closed or enqueue failed — stop polling
@@ -374,7 +386,13 @@ function handleSSE(root: string): Response {
 				);
 			});
 
-			interval = setInterval(poll, SSE_POLL_INTERVAL_MS);
+			interval = setInterval(() => {
+				poll().catch((err: unknown) => {
+					console.error(
+						`[web-dashboard] SSE poll tick failed: ${err instanceof Error ? err.message : err}`,
+					);
+				});
+			}, SSE_POLL_INTERVAL_MS);
 		},
 		cancel() {
 			cancelled = true;
@@ -800,24 +818,30 @@ function connectSSE() {
   };
 
   es.addEventListener("status", (e) => {
-    renderStatus(JSON.parse(e.data));
-    $("last-update").textContent = new Date().toLocaleTimeString();
+    try {
+      renderStatus(JSON.parse(e.data));
+      $("last-update").textContent = new Date().toLocaleTimeString();
+    } catch (err) { console.error("[dashboard] status SSE parse error:", err); }
   });
 
   es.addEventListener("mail", (e) => {
-    renderMail(JSON.parse(e.data));
+    try { renderMail(JSON.parse(e.data)); }
+    catch (err) { console.error("[dashboard] mail SSE parse error:", err); }
   });
 
   es.addEventListener("merge", (e) => {
-    renderMerge(JSON.parse(e.data));
+    try { renderMerge(JSON.parse(e.data)); }
+    catch (err) { console.error("[dashboard] merge SSE parse error:", err); }
   });
 
   es.addEventListener("events", (e) => {
-    renderEvents(JSON.parse(e.data));
+    try { renderEvents(JSON.parse(e.data)); }
+    catch (err) { console.error("[dashboard] events SSE parse error:", err); }
   });
 
   es.addEventListener("costs", (e) => {
-    renderCosts(JSON.parse(e.data));
+    try { renderCosts(JSON.parse(e.data)); }
+    catch (err) { console.error("[dashboard] costs SSE parse error:", err); }
   });
 
   es.onerror = () => {
@@ -841,11 +865,11 @@ async function init() {
       fetch("/api/merge"),
       fetch("/api/costs"),
     ]);
-    renderStatus(await statusRes.json());
-    renderEvents(await eventsRes.json());
-    renderMail(await mailRes.json());
-    renderMerge(await mergeRes.json());
-    renderCosts(await costsRes.json());
+    if (statusRes.ok) renderStatus(await statusRes.json());
+    if (eventsRes.ok) renderEvents(await eventsRes.json());
+    if (mailRes.ok) renderMail(await mailRes.json());
+    if (mergeRes.ok) renderMerge(await mergeRes.json());
+    if (costsRes.ok) renderCosts(await costsRes.json());
   } catch (err) {
     console.error("Initial fetch failed:", err);
   }
@@ -964,11 +988,13 @@ export async function webDashboardCommand(args: string[]): Promise<void> {
 		process.stdout.write(`Press Ctrl+C to stop.\n\n`);
 	}
 
-	process.on("SIGINT", () => {
+	const shutdown = () => {
 		server.stop();
 		process.stdout.write("\nDashboard stopped.\n");
 		process.exit(0);
-	});
+	};
+	process.on("SIGINT", shutdown);
+	process.on("SIGTERM", shutdown);
 
 	// Bun.serve() does not block; await a never-resolving promise to keep alive until SIGINT
 	await new Promise(() => {});
