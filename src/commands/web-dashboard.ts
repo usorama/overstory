@@ -52,7 +52,21 @@ async function loadWebDashboardData(
 ): Promise<WebDashboardData> {
 	const overstoryDir = join(root, ".overstory");
 
-	const status = await gatherStatus(root, "orchestrator", false);
+	let status: StatusData = {
+		agents: [],
+		worktrees: [],
+		tmuxSessions: [],
+		unreadMailCount: 0,
+		mergeQueueCount: 0,
+		recentMetricsCount: 0,
+	};
+	try {
+		status = await gatherStatus(root, "orchestrator", false);
+	} catch (err: unknown) {
+		console.error(
+			`[web-dashboard] Failed to load status: ${err instanceof Error ? err.message : err}`,
+		);
+	}
 
 	let events: StoredEvent[] = [];
 	try {
@@ -302,10 +316,9 @@ async function handleApiConfig(root: string): Promise<Response> {
 			watchdogTier2: loaded.watchdog.tier2Enabled,
 		});
 	} catch (err: unknown) {
-		console.error(
-			`[web-dashboard] /api/config failed: ${err instanceof Error ? err.message : err}`,
-		);
-		return jsonResponse({});
+		const msg = err instanceof Error ? err.message : String(err);
+		console.error(`[web-dashboard] /api/config failed: ${msg}`);
+		return jsonResponse({ error: "Failed to load config", detail: msg }, 500);
 	}
 }
 
@@ -313,6 +326,7 @@ async function handleApiConfig(root: string): Promise<Response> {
 
 function handleSSE(root: string): Response {
 	let interval: ReturnType<typeof setInterval> | null = null;
+	let cancelled = false;
 
 	const stream = new ReadableStream({
 		start(controller) {
@@ -328,8 +342,8 @@ function handleSSE(root: string): Response {
 						clearInterval(interval);
 						interval = null;
 					}
-					const msg = err instanceof Error ? err.message : String(err);
-					if (!msg.includes("enqueue") && !msg.includes("closed")) {
+					if (!cancelled) {
+						const msg = err instanceof Error ? err.message : String(err);
 						console.error(`[web-dashboard] SSE write failed: ${msg}`);
 					}
 				}
@@ -353,12 +367,17 @@ function handleSSE(root: string): Response {
 				}
 			};
 
-			// Initial push — fire-and-forget, errors handled inside poll()
-			poll().catch(() => {});
+			// Initial push — errors handled inside poll(), catch guards unhandled rejection
+			poll().catch((err: unknown) => {
+				console.error(
+					`[web-dashboard] SSE initial poll failed: ${err instanceof Error ? err.message : err}`,
+				);
+			});
 
 			interval = setInterval(poll, SSE_POLL_INTERVAL_MS);
 		},
 		cancel() {
+			cancelled = true;
 			if (interval) {
 				clearInterval(interval);
 				interval = null;
