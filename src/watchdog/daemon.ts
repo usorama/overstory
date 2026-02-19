@@ -131,6 +131,41 @@ function recordEvent(
 }
 
 /**
+ * Build a phase-aware completion message based on the capabilities of completed workers.
+ *
+ * Single-capability batches get targeted messages (e.g. scouts → "Ready for next phase"),
+ * while mixed-capability batches get a generic summary with a breakdown.
+ */
+export function buildCompletionMessage(
+	workerSessions: readonly AgentSession[],
+	runId: string,
+): string {
+	const capabilities = new Set(workerSessions.map((s) => s.capability));
+	const count = workerSessions.length;
+
+	if (capabilities.size === 1) {
+		if (capabilities.has("scout")) {
+			return `[WATCHDOG] All ${count} scout(s) in run ${runId} have completed. Ready for next phase.`;
+		}
+		if (capabilities.has("builder")) {
+			return `[WATCHDOG] All ${count} builder(s) in run ${runId} have completed. Ready for merge/cleanup.`;
+		}
+		if (capabilities.has("reviewer")) {
+			return `[WATCHDOG] All ${count} reviewer(s) in run ${runId} have completed. Reviews done.`;
+		}
+		if (capabilities.has("lead")) {
+			return `[WATCHDOG] All ${count} lead(s) in run ${runId} have completed. Ready for merge/cleanup.`;
+		}
+		if (capabilities.has("merger")) {
+			return `[WATCHDOG] All ${count} merger(s) in run ${runId} have completed. Merges done.`;
+		}
+	}
+
+	const breakdown = Array.from(capabilities).sort().join(", ");
+	return `[WATCHDOG] All ${count} worker(s) in run ${runId} have completed (${breakdown}). Ready for next steps.`;
+}
+
+/**
  * Check if all worker sessions for the active run have completed, and if so,
  * nudge the coordinator. Fire-and-forget: never throws.
  *
@@ -179,18 +214,16 @@ async function checkRunCompletion(ctx: {
 	}
 
 	// Nudge the coordinator
+	const message = buildCompletionMessage(workerSessions, runId);
 	try {
-		await nudge(
-			root,
-			"coordinator",
-			`[WATCHDOG] All ${workerSessions.length} worker(s) in run ${runId} have completed. Ready for merge/cleanup.`,
-			true,
-		);
+		await nudge(root, "coordinator", message, true);
 	} catch {
 		// Nudge delivery failure is non-fatal
 	}
 
 	// Record the event
+	const capabilitiesArr = Array.from(new Set(workerSessions.map((s) => s.capability))).sort();
+	const phase = capabilitiesArr.length === 1 ? capabilitiesArr[0] : "mixed";
 	recordEvent(eventStore, {
 		runId,
 		agentName: "watchdog",
@@ -200,6 +233,8 @@ async function checkRunCompletion(ctx: {
 			type: "run_complete",
 			workerCount: workerSessions.length,
 			completedAgents: workerSessions.map((s) => s.agentName),
+			capabilities: capabilitiesArr,
+			phase,
 		},
 	});
 

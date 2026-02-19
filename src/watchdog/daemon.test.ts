@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { createEventStore } from "../events/store.ts";
 import { createSessionStore } from "../sessions/store.ts";
 import type { AgentSession, HealthCheck, StoredEvent } from "../types.ts";
-import { runDaemonTick } from "./daemon.ts";
+import { buildCompletionMessage, runDaemonTick } from "./daemon.ts";
 
 // === Test constants ===
 
@@ -1384,13 +1384,12 @@ describe("run completion detection", () => {
 
 		// Filter to only run-completion nudges targeting the coordinator
 		const coordinatorNudges = nudgeMock.calls.filter(
-			(c) =>
-				c.agentName === "coordinator" &&
-				c.message.includes("WATCHDOG") &&
-				c.message.includes("worker"),
+			(c) => c.agentName === "coordinator" && c.message.includes("WATCHDOG"),
 		);
 		expect(coordinatorNudges).toHaveLength(1);
-		expect(coordinatorNudges[0]?.message).toContain("2");
+		// The test creates builders, so the message should be builder-specific
+		expect(coordinatorNudges[0]?.message).toContain("builder");
+		expect(coordinatorNudges[0]?.message).toContain("merge/cleanup");
 	});
 
 	test("does not nudge when some workers still active", async () => {
@@ -1577,9 +1576,12 @@ describe("run completion detection", () => {
 
 		// Nudge IS sent because coordinator/monitor are excluded from worker count
 		const coordinatorNudges = nudgeMock.calls.filter(
-			(c) => c.agentName === "coordinator" && c.message.includes("worker"),
+			(c) => c.agentName === "coordinator" && c.message.includes("WATCHDOG"),
 		);
 		expect(coordinatorNudges).toHaveLength(1);
+		// The test creates builders, so the message should be builder-specific
+		expect(coordinatorNudges[0]?.message).toContain("builder");
+		expect(coordinatorNudges[0]?.message).toContain("merge/cleanup");
 	});
 
 	test("does not nudge when no worker sessions in run", async () => {
@@ -1721,5 +1723,253 @@ describe("run completion detection", () => {
 		expect(await markerFile.exists()).toBe(true);
 		const markerContent = await markerFile.text();
 		expect(markerContent.trim()).toBe(runId);
+	});
+
+	test("scout-only completion sends phase-appropriate message", async () => {
+		const sessions = [
+			makeSession({
+				id: "s1",
+				agentName: "scout-one",
+				capability: "scout",
+				tmuxSession: "overstory-agent-fake-scout-one",
+				state: "completed",
+				runId,
+				lastActivity: new Date().toISOString(),
+			}),
+			makeSession({
+				id: "s2",
+				agentName: "scout-two",
+				capability: "scout",
+				tmuxSession: "overstory-agent-fake-scout-two",
+				state: "completed",
+				runId,
+				lastActivity: new Date().toISOString(),
+			}),
+		];
+
+		writeSessionsToStore(tempRoot, sessions);
+		await Bun.write(join(tempRoot, ".overstory", "current-run.txt"), runId);
+
+		const nudgeMock = nudgeTracker();
+
+		await runDaemonTick({
+			root: tempRoot,
+			...THRESHOLDS,
+			_tmux: tmuxAllAlive(),
+			_triage: triageAlways("extend"),
+			_nudge: nudgeMock.nudge,
+			_eventStore: null,
+		});
+
+		const coordinatorNudges = nudgeMock.calls.filter(
+			(c) => c.agentName === "coordinator" && c.message.includes("WATCHDOG"),
+		);
+		expect(coordinatorNudges).toHaveLength(1);
+		expect(coordinatorNudges[0]?.message).toContain("scout");
+		expect(coordinatorNudges[0]?.message).toContain("next phase");
+		// Must NOT say "merge/cleanup" for scouts
+		expect(coordinatorNudges[0]?.message).not.toContain("merge/cleanup");
+	});
+
+	test("mixed capabilities send generic message with breakdown", async () => {
+		const sessions = [
+			makeSession({
+				id: "s1",
+				agentName: "scout-one",
+				capability: "scout",
+				tmuxSession: "overstory-agent-fake-scout-one",
+				state: "completed",
+				runId,
+				lastActivity: new Date().toISOString(),
+			}),
+			makeSession({
+				id: "s2",
+				agentName: "builder-one",
+				capability: "builder",
+				tmuxSession: "overstory-agent-fake-builder-one",
+				state: "completed",
+				runId,
+				lastActivity: new Date().toISOString(),
+			}),
+		];
+
+		writeSessionsToStore(tempRoot, sessions);
+		await Bun.write(join(tempRoot, ".overstory", "current-run.txt"), runId);
+
+		const nudgeMock = nudgeTracker();
+
+		await runDaemonTick({
+			root: tempRoot,
+			...THRESHOLDS,
+			_tmux: tmuxAllAlive(),
+			_triage: triageAlways("extend"),
+			_nudge: nudgeMock.nudge,
+			_eventStore: null,
+		});
+
+		const coordinatorNudges = nudgeMock.calls.filter(
+			(c) => c.agentName === "coordinator" && c.message.includes("WATCHDOG"),
+		);
+		expect(coordinatorNudges).toHaveLength(1);
+		expect(coordinatorNudges[0]?.message).toContain("(builder, scout)");
+		expect(coordinatorNudges[0]?.message).toContain("next steps");
+	});
+
+	test("reviewer-only completion sends review-specific message", async () => {
+		const sessions = [
+			makeSession({
+				id: "s1",
+				agentName: "reviewer-one",
+				capability: "reviewer",
+				tmuxSession: "overstory-agent-fake-reviewer-one",
+				state: "completed",
+				runId,
+				lastActivity: new Date().toISOString(),
+			}),
+		];
+
+		writeSessionsToStore(tempRoot, sessions);
+		await Bun.write(join(tempRoot, ".overstory", "current-run.txt"), runId);
+
+		const nudgeMock = nudgeTracker();
+
+		await runDaemonTick({
+			root: tempRoot,
+			...THRESHOLDS,
+			_tmux: tmuxAllAlive(),
+			_triage: triageAlways("extend"),
+			_nudge: nudgeMock.nudge,
+			_eventStore: null,
+		});
+
+		const coordinatorNudges = nudgeMock.calls.filter(
+			(c) => c.agentName === "coordinator" && c.message.includes("WATCHDOG"),
+		);
+		expect(coordinatorNudges).toHaveLength(1);
+		expect(coordinatorNudges[0]?.message).toContain("reviewer");
+		expect(coordinatorNudges[0]?.message).toContain("Reviews done");
+	});
+
+	test("run_complete event includes capabilities and phase fields", async () => {
+		const sessions = [
+			makeSession({
+				id: "s1",
+				agentName: "builder-one",
+				capability: "builder",
+				tmuxSession: "overstory-agent-fake-builder-one",
+				state: "completed",
+				runId,
+				lastActivity: new Date().toISOString(),
+			}),
+		];
+
+		writeSessionsToStore(tempRoot, sessions);
+		await Bun.write(join(tempRoot, ".overstory", "current-run.txt"), runId);
+
+		const eventsDbPath = join(tempRoot, ".overstory", "events.db");
+		const eventStore = createEventStore(eventsDbPath);
+
+		try {
+			await runDaemonTick({
+				root: tempRoot,
+				...THRESHOLDS,
+				_tmux: tmuxAllAlive(),
+				_triage: triageAlways("extend"),
+				_nudge: nudgeTracker().nudge,
+				_eventStore: eventStore,
+			});
+		} finally {
+			eventStore.close();
+		}
+
+		const store = createEventStore(eventsDbPath);
+		try {
+			const events = store.getTimeline({ since: "2000-01-01T00:00:00Z" });
+			const runCompleteEvent = events.find((e) => {
+				if (!e.data) return false;
+				const data = JSON.parse(e.data) as Record<string, unknown>;
+				return data.type === "run_complete";
+			});
+			expect(runCompleteEvent).toBeDefined();
+			const data = JSON.parse(runCompleteEvent?.data ?? "{}") as Record<string, unknown>;
+			expect(data.capabilities).toEqual(["builder"]);
+			expect(data.phase).toBe("builder");
+		} finally {
+			store.close();
+		}
+	});
+});
+
+// === buildCompletionMessage unit tests ===
+
+describe("buildCompletionMessage", () => {
+	const testRunId = "run-test-123";
+
+	test("all scouts → contains 'scout' and 'Ready for next phase'", () => {
+		const sessions = [
+			makeSession({ capability: "scout", agentName: "scout-1" }),
+			makeSession({ capability: "scout", agentName: "scout-2" }),
+		];
+		const msg = buildCompletionMessage(sessions, testRunId);
+		expect(msg).toContain("scout");
+		expect(msg).toContain("Ready for next phase");
+		expect(msg).not.toContain("merge/cleanup");
+	});
+
+	test("all builders → contains 'builder' and 'Ready for merge/cleanup'", () => {
+		const sessions = [
+			makeSession({ capability: "builder", agentName: "builder-1" }),
+			makeSession({ capability: "builder", agentName: "builder-2" }),
+		];
+		const msg = buildCompletionMessage(sessions, testRunId);
+		expect(msg).toContain("builder");
+		expect(msg).toContain("Ready for merge/cleanup");
+	});
+
+	test("all reviewers → contains 'reviewer' and 'Reviews done'", () => {
+		const sessions = [makeSession({ capability: "reviewer", agentName: "reviewer-1" })];
+		const msg = buildCompletionMessage(sessions, testRunId);
+		expect(msg).toContain("reviewer");
+		expect(msg).toContain("Reviews done");
+	});
+
+	test("all leads → contains 'lead' and 'Ready for merge/cleanup'", () => {
+		const sessions = [makeSession({ capability: "lead", agentName: "lead-1" })];
+		const msg = buildCompletionMessage(sessions, testRunId);
+		expect(msg).toContain("lead");
+		expect(msg).toContain("Ready for merge/cleanup");
+	});
+
+	test("all mergers → contains 'merger' and 'Merges done'", () => {
+		const sessions = [makeSession({ capability: "merger", agentName: "merger-1" })];
+		const msg = buildCompletionMessage(sessions, testRunId);
+		expect(msg).toContain("merger");
+		expect(msg).toContain("Merges done");
+	});
+
+	test("mixed capabilities → contains breakdown and 'Ready for next steps'", () => {
+		const sessions = [
+			makeSession({ capability: "scout", agentName: "scout-1" }),
+			makeSession({ capability: "builder", agentName: "builder-1" }),
+		];
+		const msg = buildCompletionMessage(sessions, testRunId);
+		expect(msg).toContain("(builder, scout)");
+		expect(msg).toContain("Ready for next steps");
+	});
+
+	test("message includes the run ID", () => {
+		const sessions = [makeSession({ capability: "builder", agentName: "builder-1" })];
+		const msg = buildCompletionMessage(sessions, testRunId);
+		expect(msg).toContain(testRunId);
+	});
+
+	test("message includes the worker count", () => {
+		const sessions = [
+			makeSession({ capability: "scout", agentName: "scout-1" }),
+			makeSession({ capability: "scout", agentName: "scout-2" }),
+			makeSession({ capability: "scout", agentName: "scout-3" }),
+		];
+		const msg = buildCompletionMessage(sessions, testRunId);
+		expect(msg).toContain("3");
 	});
 });
