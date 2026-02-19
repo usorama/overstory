@@ -157,6 +157,7 @@ target-project/
     hooks.json                    # Central hooks config
     current-run.txt               # Active run ID
     session-branch.txt            # Branch at session start (merge target default)
+    README.md                     # Contributor-facing directory explanation
     merge-queue.db                # FIFO merge queue (SQLite, WAL mode)
     agents/{name}/                # Agent state + identity
       identity.yaml               # Persistent agent CV
@@ -416,6 +417,7 @@ overstory worktree list                 List worktrees with status
 overstory worktree clean                Remove completed worktrees
   --completed                            Only finished agents
   --all                                  Force remove all
+  --force                                Delete even if branches are unmerged
 
 overstory log <event>                   Log a hook event (called by hooks)
   --agent <name>

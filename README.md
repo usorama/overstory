@@ -182,6 +182,7 @@ overstory worktree list                 List worktrees with status
 overstory worktree clean                Remove completed worktrees
   --completed                            Only finished agents
   --all                                  Force remove all
+  --force                                Delete even if branches are unmerged
 
 overstory monitor start                 Start Tier 2 monitor agent
 overstory monitor stop                  Stop monitor agent
@@ -265,13 +266,13 @@ Global Flags:
 - **Dependencies**: Zero runtime dependencies — only Bun built-in APIs
 - **Database**: SQLite via `bun:sqlite` (WAL mode for concurrent access)
 - **Linting**: Biome (formatter + linter)
-- **Testing**: `bun test` (1868 tests across 73 files, colocated with source)
+- **Testing**: `bun test` (1892 tests across 73 files, colocated with source)
 - **External CLIs**: `bd` (beads), `mulch`, `git`, `tmux` — invoked as subprocesses
 
 ## Development
 
 ```bash
-# Run tests (1868 tests across 73 files)
+# Run tests (1892 tests across 73 files)
 bun test
 
 # Run a single test
