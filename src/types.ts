@@ -1,3 +1,21 @@
+// === Model & Provider Types ===
+
+/** Backward-compatible model alias for Anthropic models. */
+export type ModelAlias = "sonnet" | "opus" | "haiku";
+
+/**
+ * A model reference: either a simple alias ('sonnet') or a provider-qualified
+ * string ('provider/model', e.g. 'openrouter/openai/gpt-5.3').
+ */
+export type ModelRef = ModelAlias | (string & {});
+
+/** Configuration for a model provider. */
+export interface ProviderConfig {
+	type: "native" | "gateway";
+	baseUrl?: string;
+	authTokenEnv?: string;
+}
+
 // === Project Configuration ===
 
 export interface OverstoryConfig {
@@ -28,6 +46,7 @@ export interface OverstoryConfig {
 		aiResolveEnabled: boolean;
 		reimagineEnabled: boolean;
 	};
+	providers: Record<string, ProviderConfig>;
 	watchdog: {
 		tier0Enabled: boolean; // Tier 0: Mechanical daemon (heartbeat, tmux/pid liveness)
 		tier0IntervalMs: number; // Default 30_000
@@ -37,7 +56,7 @@ export interface OverstoryConfig {
 		zombieThresholdMs: number; // When to kill
 		nudgeIntervalMs: number; // Time between progressive nudge stages (default 60_000)
 	};
-	models: Partial<Record<string, "sonnet" | "opus" | "haiku">>;
+	models: Partial<Record<string, ModelRef>>;
 	logging: {
 		verbose: boolean;
 		redactSecrets: boolean;
@@ -54,7 +73,7 @@ export interface AgentManifest {
 
 export interface AgentDefinition {
 	file: string; // Path to base agent definition (.md)
-	model: "sonnet" | "opus" | "haiku";
+	model: ModelAlias;
 	tools: string[]; // Allowed tools
 	capabilities: string[]; // What this agent can do
 	canSpawn: boolean; // Can this agent spawn sub-workers?

@@ -34,6 +34,9 @@ export const DEFAULT_CONFIG: OverstoryConfig = {
 		aiResolveEnabled: true,
 		reimagineEnabled: false,
 	},
+	providers: {
+		anthropic: { type: "native" },
+	},
 	watchdog: {
 		tier0Enabled: true, // Tier 0: Mechanical daemon
 		tier0IntervalMs: 30_000,

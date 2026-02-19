@@ -218,6 +218,52 @@ watchdog:
 		expect(config.watchdog.staleThresholdMs).toBe(120000);
 	});
 
+	test("parses providers section from config.yaml", async () => {
+		await ensureOverstoryDir();
+		await writeConfig(`
+providers:
+  openrouter:
+    type: gateway
+    baseUrl: https://openrouter.ai/api/v1
+    authTokenEnv: OPENROUTER_API_KEY
+`);
+		const config = await loadConfig(tempDir);
+		expect(config.providers.openrouter).toEqual({
+			type: "gateway",
+			baseUrl: "https://openrouter.ai/api/v1",
+			authTokenEnv: "OPENROUTER_API_KEY",
+		});
+		// Default anthropic provider preserved via deep merge
+		expect(config.providers.anthropic).toEqual({ type: "native" });
+	});
+
+	test("config.local.yaml overrides provider settings", async () => {
+		await ensureOverstoryDir();
+		await writeConfig(`
+providers:
+  anthropic:
+    type: native
+`);
+		await Bun.write(
+			join(tempDir, ".overstory", "config.local.yaml"),
+			`providers:\n  anthropic:\n    type: gateway\n    baseUrl: http://localhost:8080\n`,
+		);
+		const config = await loadConfig(tempDir);
+		expect(config.providers.anthropic).toEqual({
+			type: "gateway",
+			baseUrl: "http://localhost:8080",
+		});
+	});
+
+	test("empty providers section preserves defaults", async () => {
+		await ensureOverstoryDir();
+		await writeConfig(`
+providers:
+`);
+		const config = await loadConfig(tempDir);
+		expect(config.providers.anthropic).toEqual({ type: "native" });
+	});
+
 	test("migrates deprecated watchdog tier1/tier2 keys to tier0/tier1", async () => {
 		await ensureOverstoryDir();
 		await writeConfig(`
@@ -470,9 +516,15 @@ describe("DEFAULT_CONFIG", () => {
 		expect(DEFAULT_CONFIG.beads).toBeDefined();
 		expect(DEFAULT_CONFIG.mulch).toBeDefined();
 		expect(DEFAULT_CONFIG.merge).toBeDefined();
+		expect(DEFAULT_CONFIG.providers).toBeDefined();
 		expect(DEFAULT_CONFIG.watchdog).toBeDefined();
 		expect(DEFAULT_CONFIG.models).toBeDefined();
 		expect(DEFAULT_CONFIG.logging).toBeDefined();
+	});
+
+	test("has default providers with anthropic native", () => {
+		expect(DEFAULT_CONFIG.providers).toBeDefined();
+		expect(DEFAULT_CONFIG.providers.anthropic).toEqual({ type: "native" });
 	});
 
 	test("has sensible default values", () => {
