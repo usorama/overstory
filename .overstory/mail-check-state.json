@@ -2,5 +2,11 @@
 	"monitor-tier2-builder": 1771463130452,
 	"config-cleanup-lead": 1771463226784,
 	"coordinator-tier2-builder": 1771463077000,
-	"coordinator": 1771463476729
+	"coordinator": 1771533378977,
+	"costs-lead": 1771533199124,
+	"provider-lead": 1771533352325,
+	"watchdog-lead": 1771532867506,
+	"run-id-builder": 1771533045145,
+	"watchdog-builder": 1771532800798,
+	"provider-types-builder": 1771533191837
 }
