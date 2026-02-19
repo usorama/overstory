@@ -656,6 +656,7 @@ export async function logCommand(args: string[]): Promise<void> {
 							cacheCreationTokens,
 							estimatedCostUsd,
 							modelUsed,
+							runId: agentSession.runId,
 						});
 						metricsStore.close();
 					} catch {

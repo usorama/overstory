@@ -36,6 +36,7 @@ function makeMetrics(overrides: Partial<SessionMetrics> = {}): SessionMetrics {
 		cacheCreationTokens: 901,
 		estimatedCostUsd: 0.42,
 		modelUsed: "claude-sonnet-4-20250514",
+		runId: null,
 		...overrides,
 	};
 }
@@ -436,58 +437,12 @@ describe("costsCommand", () => {
 	// === --run filter ===
 
 	describe("--run filter", () => {
-		test("filters sessions by run ID via SessionStore cross-reference", async () => {
-			const overstoryDir = join(tempDir, ".overstory");
-
-			// Create session store with run association
-			const sessDbPath = join(overstoryDir, "sessions.db");
-			const sessionStore = createSessionStore(sessDbPath);
-			sessionStore.upsert({
-				id: "sess-001",
-				agentName: "builder-1",
-				capability: "builder",
-				worktreePath: "/tmp/wt1",
-				branchName: "feat/task1",
-				beadId: "task-001",
-				tmuxSession: "tmux-001",
-				state: "completed",
-				pid: null,
-				parentAgent: null,
-				depth: 0,
-				runId: "run-2026-01-01",
-				startedAt: new Date().toISOString(),
-				lastActivity: new Date().toISOString(),
-				escalationLevel: 0,
-				stalledSince: null,
-			});
-			sessionStore.upsert({
-				id: "sess-002",
-				agentName: "scout-1",
-				capability: "scout",
-				worktreePath: "/tmp/wt2",
-				branchName: "feat/task2",
-				beadId: "task-002",
-				tmuxSession: "tmux-002",
-				state: "completed",
-				pid: null,
-				parentAgent: null,
-				depth: 0,
-				runId: "run-other",
-				startedAt: new Date().toISOString(),
-				lastActivity: new Date().toISOString(),
-				escalationLevel: 0,
-				stalledSince: null,
-			});
-			sessionStore.close();
-
-			// Create metrics store
-			const metricsDbPath = join(overstoryDir, "metrics.db");
-			const metricsStore = createMetricsStore(metricsDbPath);
-			metricsStore.recordSession(makeMetrics({ agentName: "builder-1", beadId: "task-001" }));
-			metricsStore.recordSession(
-				makeMetrics({ agentName: "scout-1", beadId: "task-002", capability: "scout" }),
-			);
-			metricsStore.close();
+		test("filters sessions by run ID directly from metrics.db", async () => {
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			store.recordSession(makeMetrics({ agentName: "builder-1", beadId: "task-001", runId: "run-2026-01-01" }));
+			store.recordSession(makeMetrics({ agentName: "scout-1", beadId: "task-002", capability: "scout", runId: "run-other" }));
+			store.close();
 
 			await costsCommand(["--json", "--run", "run-2026-01-01"]);
 			const out = output();
@@ -498,18 +453,10 @@ describe("costsCommand", () => {
 		});
 
 		test("returns empty when no sessions match run ID", async () => {
-			const overstoryDir = join(tempDir, ".overstory");
-
-			// Create empty session store
-			const sessDbPath = join(overstoryDir, "sessions.db");
-			const sessionStore = createSessionStore(sessDbPath);
-			sessionStore.close();
-
-			// Create metrics store with data
-			const metricsDbPath = join(overstoryDir, "metrics.db");
-			const metricsStore = createMetricsStore(metricsDbPath);
-			metricsStore.recordSession(makeMetrics({ agentName: "builder-1", beadId: "t1" }));
-			metricsStore.close();
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			store.recordSession(makeMetrics({ agentName: "builder-1", beadId: "t1", runId: "run-2026-01-01" }));
+			store.close();
 
 			await costsCommand(["--json", "--run", "run-nonexistent"]);
 			const out = output();

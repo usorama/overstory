@@ -427,16 +427,7 @@ export async function costsCommand(args: string[]): Promise<void> {
 		if (agentName !== undefined) {
 			sessions = metricsStore.getSessionsByAgent(agentName);
 		} else if (runId !== undefined) {
-			// Cross-reference with SessionStore to find agents in the run
-			const { store: sessionStore } = openSessionStore(overstoryDir);
-			try {
-				const runSessions = sessionStore.getByRun(runId);
-				const agentNames = new Set(runSessions.map((s) => s.agentName));
-				const allRecent = metricsStore.getRecentSessions(1000);
-				sessions = allRecent.filter((m) => agentNames.has(m.agentName));
-			} finally {
-				sessionStore.close();
-			}
+			sessions = metricsStore.getSessionsByRun(runId);
 		} else {
 			sessions = metricsStore.getRecentSessions(last);
 		}

@@ -12,6 +12,7 @@ export interface MetricsStore {
 	recordSession(metrics: SessionMetrics): void;
 	getRecentSessions(limit?: number): SessionMetrics[];
 	getSessionsByAgent(agentName: string): SessionMetrics[];
+	getSessionsByRun(runId: string): SessionMetrics[];
 	getAverageDuration(capability?: string): number;
 	/** Delete metrics matching the given criteria. Returns the number of rows deleted. */
 	purge(options: { all?: boolean; agent?: string }): number;
@@ -43,6 +44,7 @@ interface SessionRow {
 	cache_creation_tokens: number;
 	estimated_cost_usd: number | null;
 	model_used: string | null;
+	run_id: string | null;
 }
 
 /** Snapshot row shape as stored in SQLite (snake_case columns). */
@@ -75,6 +77,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
   estimated_cost_usd REAL,
   model_used TEXT,
+  run_id TEXT,
   PRIMARY KEY (agent_name, bead_id)
 )`;
 
@@ -105,6 +108,18 @@ const TOKEN_COLUMNS = [
 	{ name: "estimated_cost_usd", ddl: "REAL" },
 	{ name: "model_used", ddl: "TEXT" },
 ] as const;
+
+/**
+ * Migrate an existing sessions table to include the run_id column.
+ * Safe to call multiple times — only adds the column if missing.
+ */
+function migrateRunIdColumn(db: Database): void {
+	const rows = db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name: string }>;
+	const existingColumns = new Set(rows.map((r) => r.name));
+	if (!existingColumns.has("run_id")) {
+		db.exec("ALTER TABLE sessions ADD COLUMN run_id TEXT");
+	}
+}
 
 /**
  * Migrate an existing sessions table to include token columns.
@@ -139,6 +154,7 @@ function rowToMetrics(row: SessionRow): SessionMetrics {
 		cacheCreationTokens: row.cache_creation_tokens,
 		estimatedCostUsd: row.estimated_cost_usd,
 		modelUsed: row.model_used,
+		runId: row.run_id,
 	};
 }
 
@@ -175,8 +191,9 @@ export function createMetricsStore(dbPath: string): MetricsStore {
 	db.exec(CREATE_SNAPSHOTS_TABLE);
 	db.exec(CREATE_SNAPSHOTS_INDEX);
 
-	// Migrate: add token columns to existing tables that lack them
+	// Migrate: add token columns and run_id column to existing tables that lack them
 	migrateTokenColumns(db);
+	migrateRunIdColumn(db);
 
 	// Prepare statements for all queries
 	const insertStmt = db.prepare<
@@ -197,12 +214,13 @@ export function createMetricsStore(dbPath: string): MetricsStore {
 			$cache_creation_tokens: number;
 			$estimated_cost_usd: number | null;
 			$model_used: string | null;
+			$run_id: string | null;
 		}
 	>(`
 		INSERT OR REPLACE INTO sessions
-			(agent_name, bead_id, capability, started_at, completed_at, duration_ms, exit_code, merge_result, parent_agent, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, estimated_cost_usd, model_used)
+			(agent_name, bead_id, capability, started_at, completed_at, duration_ms, exit_code, merge_result, parent_agent, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, estimated_cost_usd, model_used, run_id)
 		VALUES
-			($agent_name, $bead_id, $capability, $started_at, $completed_at, $duration_ms, $exit_code, $merge_result, $parent_agent, $input_tokens, $output_tokens, $cache_read_tokens, $cache_creation_tokens, $estimated_cost_usd, $model_used)
+			($agent_name, $bead_id, $capability, $started_at, $completed_at, $duration_ms, $exit_code, $merge_result, $parent_agent, $input_tokens, $output_tokens, $cache_read_tokens, $cache_creation_tokens, $estimated_cost_usd, $model_used, $run_id)
 	`);
 
 	const recentStmt = db.prepare<SessionRow, { $limit: number }>(`
@@ -211,6 +229,10 @@ export function createMetricsStore(dbPath: string): MetricsStore {
 
 	const byAgentStmt = db.prepare<SessionRow, { $agent_name: string }>(`
 		SELECT * FROM sessions WHERE agent_name = $agent_name ORDER BY started_at DESC
+	`);
+
+	const byRunStmt = db.prepare<SessionRow, { $run_id: string }>(`
+		SELECT * FROM sessions WHERE run_id = $run_id ORDER BY started_at DESC
 	`);
 
 	const avgDurationAllStmt = db.prepare<{ avg_duration: number | null }, Record<string, never>>(`
@@ -282,6 +304,7 @@ export function createMetricsStore(dbPath: string): MetricsStore {
 				$cache_creation_tokens: metrics.cacheCreationTokens,
 				$estimated_cost_usd: metrics.estimatedCostUsd,
 				$model_used: metrics.modelUsed,
+				$run_id: metrics.runId,
 			});
 		},
 
@@ -292,6 +315,11 @@ export function createMetricsStore(dbPath: string): MetricsStore {
 
 		getSessionsByAgent(agentName: string): SessionMetrics[] {
 			const rows = byAgentStmt.all({ $agent_name: agentName });
+			return rows.map(rowToMetrics);
+		},
+
+		getSessionsByRun(runId: string): SessionMetrics[] {
+			const rows = byRunStmt.all({ $run_id: runId });
 			return rows.map(rowToMetrics);
 		},
 

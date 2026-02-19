@@ -53,6 +53,7 @@ function makeMetrics(overrides: Partial<SessionMetrics> = {}): SessionMetrics {
 		cacheCreationTokens: 100,
 		estimatedCostUsd: 0.025,
 		modelUsed: "claude-sonnet-4-5-20250929",
+		runId: null,
 		...overrides,
 	};
 }

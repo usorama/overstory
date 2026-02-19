@@ -341,6 +341,7 @@ export interface SessionMetrics {
 	cacheCreationTokens: number;
 	estimatedCostUsd: number | null;
 	modelUsed: string | null;
+	runId: string | null;
 }
 
 /** A point-in-time token usage snapshot for a running agent session. */

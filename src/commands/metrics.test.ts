@@ -68,6 +68,7 @@ describe("metricsCommand", () => {
 			cacheCreationTokens: 0,
 			estimatedCostUsd: null,
 			modelUsed: null,
+			runId: null,
 			...overrides,
 		};
 	}
@@ -376,6 +377,7 @@ describe("formatDuration helper", () => {
 			cacheCreationTokens: 0,
 			estimatedCostUsd: null,
 			modelUsed: null,
+			runId: null,
 		};
 	}
 
