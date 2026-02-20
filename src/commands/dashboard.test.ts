@@ -11,7 +11,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ValidationError } from "../errors.ts";
-import { dashboardCommand, filterAgentsByRun } from "./dashboard.ts";
+import { dashboardCommand, filterAgentsByRun, horizontalLine, pad, truncate } from "./dashboard.ts";
 
 describe("dashboardCommand", () => {
 	let chunks: string[];
@@ -104,6 +104,60 @@ describe("dashboardCommand", () => {
 		const out = output();
 
 		expect(out).toContain("current run");
+	});
+});
+
+describe("pad", () => {
+	test("zero width returns empty string", () => {
+		expect(pad("hello", 0)).toBe("");
+	});
+
+	test("negative width returns empty string", () => {
+		expect(pad("hello", -1)).toBe("");
+	});
+
+	test("truncates string longer than width", () => {
+		expect(pad("hello", 3)).toBe("hel");
+	});
+
+	test("pads string shorter than width with spaces", () => {
+		expect(pad("hi", 5)).toBe("hi   ");
+	});
+});
+
+describe("truncate", () => {
+	test("zero maxLen returns empty string", () => {
+		expect(truncate("hello world", 0)).toBe("");
+	});
+
+	test("negative maxLen returns empty string", () => {
+		expect(truncate("hello world", -1)).toBe("");
+	});
+
+	test("truncates with ellipsis", () => {
+		expect(truncate("hello world", 5)).toBe("hell…");
+	});
+
+	test("string shorter than maxLen returned as-is", () => {
+		expect(truncate("hi", 10)).toBe("hi");
+	});
+});
+
+describe("horizontalLine", () => {
+	test("width 0 does not throw", () => {
+		expect(() => horizontalLine(0, "┌", "─", "┐")).not.toThrow();
+	});
+
+	test("width 1 does not throw", () => {
+		expect(() => horizontalLine(1, "┌", "─", "┐")).not.toThrow();
+	});
+
+	test("width 2 returns just connectors", () => {
+		expect(horizontalLine(2, "┌", "─", "┐")).toBe("┌┐");
+	});
+
+	test("width 4 returns connectors with fill", () => {
+		expect(horizontalLine(4, "┌", "─", "┐")).toBe("┌──┐");
 	});
 });
 

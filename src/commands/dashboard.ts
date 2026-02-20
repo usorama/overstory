@@ -92,6 +92,7 @@ function timeAgo(timestamp: string): string {
  * Truncate a string to fit within maxLen characters, adding ellipsis if needed.
  */
 function truncate(str: string, maxLen: number): string {
+	if (maxLen <= 0) return "";
 	if (str.length <= maxLen) return str;
 	return `${str.slice(0, maxLen - 1)}…`;
 }
@@ -100,6 +101,7 @@ function truncate(str: string, maxLen: number): string {
  * Pad or truncate a string to exactly the given width.
  */
 function pad(str: string, width: number): string {
+	if (width <= 0) return "";
 	if (str.length >= width) return str.slice(0, width);
 	return str + " ".repeat(width - str.length);
 }
@@ -108,8 +110,10 @@ function pad(str: string, width: number): string {
  * Draw a horizontal line with left/right/middle connectors.
  */
 function horizontalLine(width: number, left: string, _middle: string, right: string): string {
-	return left + BOX.horizontal.repeat(width - 2) + right;
+	return left + BOX.horizontal.repeat(Math.max(0, width - 2)) + right;
 }
+
+export { pad, truncate, horizontalLine };
 
 /**
  * Filter agents by run ID. When run-scoped, also includes sessions with null
@@ -327,7 +331,7 @@ function renderAgentPanel(
 	// Panel header
 	const headerLine = `${BOX.vertical} ${color.bold}Agents${color.reset} (${data.status.agents.length})`;
 	const headerPadding = " ".repeat(
-		width - headerLine.length - 1 + color.bold.length + color.reset.length,
+		Math.max(0, width - headerLine.length - 1 + color.bold.length + color.reset.length),
 	);
 	output += `${CURSOR.cursorTo(startRow, 1)}${headerLine}${headerPadding}${BOX.vertical}\n`;
 
@@ -378,7 +382,7 @@ function renderAgentPanel(
 
 	// Fill remaining rows with empty lines
 	for (let i = visibleAgents.length; i < maxRows; i++) {
-		const emptyLine = `${BOX.vertical}${" ".repeat(width - 2)}${BOX.vertical}`;
+		const emptyLine = `${BOX.vertical}${" ".repeat(Math.max(0, width - 2))}${BOX.vertical}`;
 		output += `${CURSOR.cursorTo(startRow + 3 + i, 1)}${emptyLine}\n`;
 	}
 
@@ -423,7 +427,7 @@ function renderMailPanel(
 	const unreadCount = data.status.unreadMailCount;
 	const headerLine = `${BOX.vertical} ${color.bold}Mail${color.reset} (${unreadCount} unread)`;
 	const headerPadding = " ".repeat(
-		panelWidth - headerLine.length - 1 + color.bold.length + color.reset.length,
+		Math.max(0, panelWidth - headerLine.length - 1 + color.bold.length + color.reset.length),
 	);
 	output += `${CURSOR.cursorTo(startRow, 1)}${headerLine}${headerPadding}${BOX.vertical}\n`;
 
@@ -462,7 +466,7 @@ function renderMailPanel(
 
 	// Fill remaining rows with empty lines
 	for (let i = messages.length; i < maxRows; i++) {
-		const emptyLine = `${BOX.vertical}${" ".repeat(panelWidth - 2)}${BOX.vertical}`;
+		const emptyLine = `${BOX.vertical}${" ".repeat(Math.max(0, panelWidth - 2))}${BOX.vertical}`;
 		output += `${CURSOR.cursorTo(startRow + 2 + i, 1)}${emptyLine}\n`;
 	}
 
@@ -503,7 +507,7 @@ function renderMergeQueuePanel(
 
 	const headerLine = `${BOX.vertical} ${color.bold}Merge Queue${color.reset} (${data.mergeQueue.length})`;
 	const headerPadding = " ".repeat(
-		panelWidth - headerLine.length - 1 + color.bold.length + color.reset.length,
+		Math.max(0, panelWidth - headerLine.length - 1 + color.bold.length + color.reset.length),
 	);
 	output += `${CURSOR.cursorTo(startRow, startCol)}${headerLine}${headerPadding}${BOX.vertical}\n`;
 
@@ -531,7 +535,7 @@ function renderMergeQueuePanel(
 
 	// Fill remaining rows with empty lines
 	for (let i = entries.length; i < maxRows; i++) {
-		const emptyLine = `${BOX.vertical}${" ".repeat(panelWidth - 2)}${BOX.vertical}`;
+		const emptyLine = `${BOX.vertical}${" ".repeat(Math.max(0, panelWidth - 2))}${BOX.vertical}`;
 		output += `${CURSOR.cursorTo(startRow + 2 + i, startCol)}${emptyLine}\n`;
 	}
 
@@ -554,7 +558,7 @@ function renderMetricsPanel(
 
 	const headerLine = `${BOX.vertical} ${color.bold}Metrics${color.reset}`;
 	const headerPadding = " ".repeat(
-		width - headerLine.length - 1 + color.bold.length + color.reset.length,
+		Math.max(0, width - headerLine.length - 1 + color.bold.length + color.reset.length),
 	);
 	output += `${CURSOR.cursorTo(startRow + 1, 1)}${headerLine}${headerPadding}${BOX.vertical}\n`;
 
