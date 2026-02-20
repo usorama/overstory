@@ -171,12 +171,13 @@ async function loadDashboardData(root: string, runId?: string | null): Promise<D
 			const mailStore = createMailStore(mailDbPath);
 			if (runId && filteredAgents.length > 0) {
 				const agentNames = new Set(filteredAgents.map((a) => a.agentName));
-				const allMail = mailStore.getAll();
+				// Fetch a small batch to filter from; can't push agent-set filter into SQL
+				const allMail = mailStore.getAll({ limit: 50 });
 				recentMail = allMail
 					.filter((m) => agentNames.has(m.from) || agentNames.has(m.to))
 					.slice(0, 5);
 			} else {
-				recentMail = mailStore.getAll().slice(0, 5);
+				recentMail = mailStore.getAll({ limit: 5 });
 			}
 			mailStore.close();
 		}

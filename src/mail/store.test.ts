@@ -353,6 +353,53 @@ describe("createMailStore", () => {
 			expect(readOnly[0]?.subject).toBe("msg1");
 		});
 
+		test("respects limit option", () => {
+			for (let i = 1; i <= 5; i++) {
+				store.insert({
+					id: "",
+					from: "agent-a",
+					to: "orchestrator",
+					subject: `msg${i}`,
+					body: `body${i}`,
+					type: "status",
+					priority: "normal",
+					threadId: null,
+				});
+			}
+
+			const limited = store.getAll({ limit: 3 });
+			expect(limited).toHaveLength(3);
+		});
+
+		test("limit combined with filter", () => {
+			for (let i = 1; i <= 4; i++) {
+				store.insert({
+					id: "",
+					from: "agent-a",
+					to: "orchestrator",
+					subject: `a-msg${i}`,
+					body: `body`,
+					type: "status",
+					priority: "normal",
+					threadId: null,
+				});
+			}
+			store.insert({
+				id: "",
+				from: "agent-b",
+				to: "orchestrator",
+				subject: "b-msg",
+				body: "body",
+				type: "status",
+				priority: "normal",
+				threadId: null,
+			});
+
+			const limited = store.getAll({ from: "agent-a", limit: 2 });
+			expect(limited).toHaveLength(2);
+			expect(limited.every((m) => m.from === "agent-a")).toBe(true);
+		});
+
 		test("combines multiple filters", () => {
 			store.insert({
 				id: "",
