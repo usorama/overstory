@@ -29,9 +29,9 @@
 		"memberIssueIds": [
 			"overstory-iycz"
 		],
-		"status": "active",
+		"status": "completed",
 		"createdAt": "2026-02-14T03:56:38.536Z",
-		"completedAt": null
+		"completedAt": "2026-02-17T01:24:44.805Z"
 	},
 	{
 		"id": "group-176f478e",
@@ -108,5 +108,129 @@
 		"status": "completed",
 		"createdAt": "2026-02-16T21:01:52.405Z",
 		"completedAt": "2026-02-16T21:59:24.313Z"
+	},
+	{
+		"id": "group-d989193a",
+		"name": "mulch-insight-loop",
+		"memberIssueIds": [
+			"overstory-vdg7",
+			"overstory-b1ac",
+			"overstory-7kn2",
+			"overstory-7jr8"
+		],
+		"status": "completed",
+		"createdAt": "2026-02-17T01:26:14.086Z",
+		"completedAt": "2026-02-17T01:39:43.396Z"
+	},
+	{
+		"id": "group-c3d6f2b0",
+		"name": "batch-2-intelligence",
+		"memberIssueIds": [
+			"overstory-e7hf",
+			"overstory-e1q2",
+			"overstory-i1v4",
+			"overstory-9kuz",
+			"overstory-6ib5",
+			"overstory-uh2h",
+			"overstory-mifc"
+		],
+		"status": "completed",
+		"createdAt": "2026-02-17T01:50:13.735Z",
+		"completedAt": "2026-02-17T02:28:22.023Z"
+	},
+	{
+		"id": "group-789abdfe",
+		"name": "gitignore-fix",
+		"memberIssueIds": [
+			"overstory-8jo7"
+		],
+		"status": "completed",
+		"createdAt": "2026-02-17T15:15:31.532Z",
+		"completedAt": "2026-02-17T15:29:26.526Z"
+	},
+	{
+		"id": "group-96dcccc8",
+		"name": "p1p2-workflow-fixes",
+		"memberIssueIds": [
+			"overstory-9sct",
+			"overstory-sgy6",
+			"overstory-8pcf",
+			"overstory-tgcl"
+		],
+		"status": "completed",
+		"createdAt": "2026-02-17T15:35:39.805Z",
+		"completedAt": "2026-02-17T16:14:56.698Z"
+	},
+	{
+		"id": "group-933a3b72",
+		"name": "p1p2-batch-2",
+		"memberIssueIds": [
+			"overstory-e5jb",
+			"overstory-d9d8",
+			"overstory-6sc8",
+			"overstory-3e3s"
+		],
+		"status": "completed",
+		"createdAt": "2026-02-18T15:14:35.484Z",
+		"completedAt": "2026-02-18T15:57:31.236Z"
+	},
+	{
+		"id": "group-e4629264",
+		"name": "backlog-priority-sweep",
+		"memberIssueIds": [
+			"overstory-6j2o",
+			"overstory-zq15",
+			"overstory-2bix",
+			"overstory-so0b",
+			"overstory-2ki1"
+		],
+		"status": "completed",
+		"createdAt": "2026-02-19T00:31:06.559Z",
+		"completedAt": "2026-02-19T01:09:07.132Z"
+	},
+	{
+		"id": "group-06092dc7",
+		"name": "p1p2-sweep",
+		"memberIssueIds": [
+			"overstory-yg84",
+			"overstory-rgst",
+			"overstory-4szs",
+			"overstory-1ilu"
+		],
+		"status": "completed",
+		"createdAt": "2026-02-19T20:21:09.590Z",
+		"completedAt": "2026-02-19T21:06:25.825Z"
+	},
+	{
+		"id": "group-95d1818d",
+		"name": "p1p2-dashboard-config",
+		"memberIssueIds": [
+			"overstory-x9n3",
+			"overstory-eft1",
+			"overstory-qqr4",
+			"overstory-99ec",
+			"overstory-4zcj",
+			"overstory-je5w",
+			"overstory-qfln",
+			"overstory-d1g8"
+		],
+		"status": "completed",
+		"createdAt": "2026-02-20T15:25:14.163Z",
+		"completedAt": "2026-02-20T16:24:52.178Z"
+	},
+	{
+		"id": "group-9dac102d",
+		"name": "mulch-integration-batch",
+		"memberIssueIds": [
+			"overstory-rhk5",
+			"overstory-qn3h",
+			"overstory-0fuu",
+			"overstory-4jca",
+			"overstory-vs8z",
+			"overstory-xo8h"
+		],
+		"status": "completed",
+		"createdAt": "2026-02-20T21:14:56.928Z",
+		"completedAt": "2026-02-20T21:31:36.706Z"
 	}
 ]

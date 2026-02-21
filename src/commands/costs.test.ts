@@ -9,7 +9,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ValidationError } from "../errors.ts";
@@ -36,6 +36,7 @@ function makeMetrics(overrides: Partial<SessionMetrics> = {}): SessionMetrics {
 		cacheCreationTokens: 901,
 		estimatedCostUsd: 0.42,
 		modelUsed: "claude-sonnet-4-20250514",
+		runId: null,
 		...overrides,
 	};
 }
@@ -436,58 +437,21 @@ describe("costsCommand", () => {
 	// === --run filter ===
 
 	describe("--run filter", () => {
-		test("filters sessions by run ID via SessionStore cross-reference", async () => {
-			const overstoryDir = join(tempDir, ".overstory");
-
-			// Create session store with run association
-			const sessDbPath = join(overstoryDir, "sessions.db");
-			const sessionStore = createSessionStore(sessDbPath);
-			sessionStore.upsert({
-				id: "sess-001",
-				agentName: "builder-1",
-				capability: "builder",
-				worktreePath: "/tmp/wt1",
-				branchName: "feat/task1",
-				beadId: "task-001",
-				tmuxSession: "tmux-001",
-				state: "completed",
-				pid: null,
-				parentAgent: null,
-				depth: 0,
-				runId: "run-2026-01-01",
-				startedAt: new Date().toISOString(),
-				lastActivity: new Date().toISOString(),
-				escalationLevel: 0,
-				stalledSince: null,
-			});
-			sessionStore.upsert({
-				id: "sess-002",
-				agentName: "scout-1",
-				capability: "scout",
-				worktreePath: "/tmp/wt2",
-				branchName: "feat/task2",
-				beadId: "task-002",
-				tmuxSession: "tmux-002",
-				state: "completed",
-				pid: null,
-				parentAgent: null,
-				depth: 0,
-				runId: "run-other",
-				startedAt: new Date().toISOString(),
-				lastActivity: new Date().toISOString(),
-				escalationLevel: 0,
-				stalledSince: null,
-			});
-			sessionStore.close();
-
-			// Create metrics store
-			const metricsDbPath = join(overstoryDir, "metrics.db");
-			const metricsStore = createMetricsStore(metricsDbPath);
-			metricsStore.recordSession(makeMetrics({ agentName: "builder-1", beadId: "task-001" }));
-			metricsStore.recordSession(
-				makeMetrics({ agentName: "scout-1", beadId: "task-002", capability: "scout" }),
+		test("filters sessions by run ID directly from metrics.db", async () => {
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			store.recordSession(
+				makeMetrics({ agentName: "builder-1", beadId: "task-001", runId: "run-2026-01-01" }),
 			);
-			metricsStore.close();
+			store.recordSession(
+				makeMetrics({
+					agentName: "scout-1",
+					beadId: "task-002",
+					capability: "scout",
+					runId: "run-other",
+				}),
+			);
+			store.close();
 
 			await costsCommand(["--json", "--run", "run-2026-01-01"]);
 			const out = output();
@@ -498,18 +462,12 @@ describe("costsCommand", () => {
 		});
 
 		test("returns empty when no sessions match run ID", async () => {
-			const overstoryDir = join(tempDir, ".overstory");
-
-			// Create empty session store
-			const sessDbPath = join(overstoryDir, "sessions.db");
-			const sessionStore = createSessionStore(sessDbPath);
-			sessionStore.close();
-
-			// Create metrics store with data
-			const metricsDbPath = join(overstoryDir, "metrics.db");
-			const metricsStore = createMetricsStore(metricsDbPath);
-			metricsStore.recordSession(makeMetrics({ agentName: "builder-1", beadId: "t1" }));
-			metricsStore.close();
+			const dbPath = join(tempDir, ".overstory", "metrics.db");
+			const store = createMetricsStore(dbPath);
+			store.recordSession(
+				makeMetrics({ agentName: "builder-1", beadId: "t1", runId: "run-2026-01-01" }),
+			);
+			store.close();
 
 			await costsCommand(["--json", "--run", "run-nonexistent"]);
 			const out = output();
@@ -1046,6 +1004,116 @@ describe("costsCommand", () => {
 			};
 			expect(parsed.agents).toEqual([]);
 			expect(parsed.totals.costUsd).toBe(0);
+		});
+	});
+
+	// === --self flag ===
+
+	describe("--self flag", () => {
+		let tempHome: string;
+		let originalHome: string | undefined;
+
+		/** Helper to create a transcript JSONL with known token values. */
+		function makeTranscriptContent(): string {
+			const entry = {
+				type: "assistant",
+				message: {
+					model: "claude-sonnet-4-20250514",
+					usage: {
+						input_tokens: 5000,
+						output_tokens: 2000,
+						cache_read_input_tokens: 15000,
+						cache_creation_input_tokens: 3000,
+					},
+				},
+			};
+			return `${JSON.stringify(entry)}\n`;
+		}
+
+		beforeEach(async () => {
+			originalHome = process.env.HOME;
+			tempHome = await mkdtemp(join(tmpdir(), "costs-self-home-"));
+		});
+
+		afterEach(async () => {
+			process.env.HOME = originalHome;
+			await rm(tempHome, { recursive: true, force: true });
+		});
+
+		test("--self shows orchestrator cost when transcript exists", async () => {
+			// Use process.cwd() to get the symlink-resolved path (on macOS /var -> /private/var).
+			// config.project.root comes from resolveProjectRoot which uses process.cwd() internally,
+			// so we must match that for the project key.
+			const resolvedRoot = process.cwd();
+			const projectKey = resolvedRoot.replace(/\//g, "-");
+			const projectDir = join(tempHome, ".claude", "projects", projectKey);
+			await mkdir(projectDir, { recursive: true });
+			await Bun.write(join(projectDir, "session-abc123.jsonl"), makeTranscriptContent());
+
+			process.env.HOME = tempHome;
+
+			await costsCommand(["--self"]);
+			const out = output();
+
+			expect(out).toContain("Orchestrator Session Cost");
+			expect(out).toContain("claude-sonnet-4-20250514");
+			expect(out).toContain("5,000"); // input tokens formatted
+			expect(out).toContain("2,000"); // output tokens formatted
+			expect(out).toContain("18,000"); // cache total (15000 + 3000)
+			// Should have some cost estimate
+			expect(out).toContain("$");
+		});
+
+		test("--self --json outputs JSON with expected fields", async () => {
+			// Use process.cwd() to match the symlink-resolved root used by config
+			const resolvedRoot = process.cwd();
+			const projectKey = resolvedRoot.replace(/\//g, "-");
+			const projectDir = join(tempHome, ".claude", "projects", projectKey);
+			await mkdir(projectDir, { recursive: true });
+			await Bun.write(join(projectDir, "session-abc123.jsonl"), makeTranscriptContent());
+
+			process.env.HOME = tempHome;
+
+			await costsCommand(["--self", "--json"]);
+			const out = output();
+
+			const parsed = JSON.parse(out.trim()) as Record<string, unknown>;
+			expect(parsed.source).toBe("self");
+			expect(typeof parsed.transcriptPath).toBe("string");
+			expect(parsed.model).toBe("claude-sonnet-4-20250514");
+			expect(parsed.inputTokens).toBe(5000);
+			expect(parsed.outputTokens).toBe(2000);
+			expect(parsed.cacheReadTokens).toBe(15000);
+			expect(parsed.cacheCreationTokens).toBe(3000);
+			expect(parsed.estimatedCostUsd).toBeDefined();
+		});
+
+		test("--self shows error when no transcript found", async () => {
+			// No .claude directory — just set HOME to tempHome with nothing in it
+			process.env.HOME = tempHome;
+
+			await costsCommand(["--self"]);
+			const out = output();
+
+			expect(out).toContain("No orchestrator transcript found");
+		});
+
+		test("--self --json outputs error JSON when no transcript found", async () => {
+			// No .claude directory
+			process.env.HOME = tempHome;
+
+			await costsCommand(["--self", "--json"]);
+			const out = output();
+
+			const parsed = JSON.parse(out.trim()) as Record<string, unknown>;
+			expect(parsed.error).toBe("no_transcript");
+		});
+
+		test("--self in help text", async () => {
+			await costsCommand(["--help"]);
+			const out = output();
+
+			expect(out).toContain("--self");
 		});
 	});
 });

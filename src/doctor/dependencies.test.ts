@@ -31,6 +31,9 @@ const mockConfig: OverstoryConfig = {
 		aiResolveEnabled: false,
 		reimagineEnabled: false,
 	},
+	providers: {
+		anthropic: { type: "native" },
+	},
 	watchdog: {
 		tier0Enabled: false,
 		tier0IntervalMs: 30000,
@@ -61,6 +64,18 @@ describe("checkDependencies", () => {
 		expect(toolNames).toContain("tmux availability");
 		expect(toolNames).toContain("bd availability");
 		expect(toolNames).toContain("mulch availability");
+	});
+
+	test("includes bd CGO support check when bd is available", async () => {
+		const checks = await checkDependencies(mockConfig, "/tmp/.overstory");
+
+		const bdCheck = checks.find((c) => c.name === "bd availability");
+		if (bdCheck?.status === "pass") {
+			const cgoCheck = checks.find((c) => c.name === "bd CGO support");
+			expect(cgoCheck).toBeDefined();
+			expect(cgoCheck?.category).toBe("dependencies");
+			expect(["pass", "warn", "fail"]).toContain(cgoCheck?.status ?? "");
+		}
 	});
 
 	test("all checks have required DoctorCheck fields", async () => {

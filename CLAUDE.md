@@ -152,10 +152,12 @@ overstory/                        # This repo (the overstory tool itself)
 target-project/
   .overstory/
     config.yaml                   # Project configuration
+    config.local.yaml             # Machine-specific overrides (gitignored)
     agent-manifest.json           # Agent registry
     hooks.json                    # Central hooks config
     current-run.txt               # Active run ID
     session-branch.txt            # Branch at session start (merge target default)
+    README.md                     # Contributor-facing directory explanation
     merge-queue.db                # FIFO merge queue (SQLite, WAL mode)
     agents/{name}/                # Agent state + identity
       identity.yaml               # Persistent agent CV
@@ -337,9 +339,11 @@ overstory group <sub>                  Batch coordination
 ```
 overstory status                        Show all active agents, worktrees, state
   --json  --verbose                      JSON output / extra per-agent detail
+  --all                                  Show all runs (default: current run only)
 
 overstory dashboard                     Live TUI dashboard for agent monitoring
   --interval <ms>                        Poll interval (default: 2000, min: 500)
+  --all                                  Show all runs (default: current run only)
 
 overstory inspect <agent>               Deep inspection of a single agent
   --follow                               Poll and refresh continuously
@@ -390,6 +394,7 @@ overstory logs [options]                Query NDJSON logs across agents
 
 overstory costs                          Token/cost analysis and breakdown
   --live                                 Show real-time token usage for active agents
+  --self                                 Show cost for the current orchestrator session
   --agent <name>  --run <id>             Filter by agent or run
   --by-capability                        Group by capability with subtotals
   --last <n>                             Recent sessions (default: 20)
@@ -413,6 +418,7 @@ overstory worktree list                 List worktrees with status
 overstory worktree clean                Remove completed worktrees
   --completed                            Only finished agents
   --all                                  Force remove all
+  --force                                Delete even if branches are unmerged
 
 overstory log <event>                   Log a hook event (called by hooks)
   --agent <name>

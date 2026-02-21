@@ -23,7 +23,14 @@ import { openSessionStore } from "../sessions/compat.ts";
 import { createRunStore } from "../sessions/store.ts";
 import type { AgentSession } from "../types.ts";
 import { isProcessRunning } from "../watchdog/health.ts";
-import { createSession, isSessionAlive, killSession, sendKeys } from "../worktree/tmux.ts";
+import {
+	createSession,
+	isSessionAlive,
+	killSession,
+	sendKeys,
+	waitForTuiReady,
+} from "../worktree/tmux.ts";
+import { isRunningAsRoot } from "./sling.ts";
 
 /** Default coordinator agent name. */
 const COORDINATOR_NAME = "coordinator";
@@ -48,6 +55,11 @@ export interface CoordinatorDeps {
 		isSessionAlive: (name: string) => Promise<boolean>;
 		killSession: (name: string) => Promise<void>;
 		sendKeys: (name: string, keys: string) => Promise<void>;
+		waitForTuiReady: (
+			name: string,
+			timeoutMs?: number,
+			pollIntervalMs?: number,
+		) => Promise<boolean>;
 	};
 	_watchdog?: {
 		start: () => Promise<{ pid: number } | null>;
@@ -259,12 +271,25 @@ export function resolveAttach(args: string[], isTTY: boolean): boolean {
 }
 
 async function startCoordinator(args: string[], deps: CoordinatorDeps = {}): Promise<void> {
-	const tmux = deps._tmux ?? { createSession, isSessionAlive, killSession, sendKeys };
+	const tmux = deps._tmux ?? {
+		createSession,
+		isSessionAlive,
+		killSession,
+		sendKeys,
+		waitForTuiReady,
+	};
 
 	const json = args.includes("--json");
 	const shouldAttach = resolveAttach(args, !!process.stdout.isTTY);
 	const watchdogFlag = args.includes("--watchdog");
 	const monitorFlag = args.includes("--monitor");
+
+	if (isRunningAsRoot()) {
+		throw new AgentError(
+			"Cannot spawn agents as root (UID 0). The claude CLI rejects --dangerously-skip-permissions when run as root, causing the tmux session to die immediately. Run overstory as a non-root user.",
+		);
+	}
+
 	const cwd = process.cwd();
 	const config = await loadConfig(cwd);
 	const projectRoot = config.project.root;
@@ -324,7 +349,7 @@ async function startCoordinator(args: string[], deps: CoordinatorDeps = {}): Pro
 			join(projectRoot, config.agents.baseDir),
 		);
 		const manifest = await manifestLoader.load();
-		const model = resolveModel(config, manifest, "coordinator", "opus");
+		const { model, env } = resolveModel(config, manifest, "coordinator", "opus");
 
 		// Spawn tmux session at project root with Claude Code (interactive mode).
 		// Inject the coordinator base definition via --append-system-prompt so the
@@ -340,6 +365,7 @@ async function startCoordinator(args: string[], deps: CoordinatorDeps = {}): Pro
 			claudeCmd += ` --append-system-prompt '${escaped}'`;
 		}
 		const pid = await tmux.createSession(tmuxSession, projectRoot, claudeCmd, {
+			...env,
 			OVERSTORY_AGENT_NAME: COORDINATOR_NAME,
 		});
 
@@ -368,14 +394,18 @@ async function startCoordinator(args: string[], deps: CoordinatorDeps = {}): Pro
 
 		store.upsert(session);
 
-		// Send beacon after TUI initialization delay
-		await Bun.sleep(3_000);
+		// Wait for Claude Code TUI to render before sending input
+		await tmux.waitForTuiReady(tmuxSession);
+		await Bun.sleep(1_000);
+
 		const beacon = buildCoordinatorBeacon();
 		await tmux.sendKeys(tmuxSession, beacon);
 
-		// Follow-up Enter to ensure submission (same pattern as sling.ts)
-		await Bun.sleep(500);
-		await tmux.sendKeys(tmuxSession, "");
+		// Follow-up Enters with increasing delays to ensure submission
+		for (const delay of [1_000, 2_000]) {
+			await Bun.sleep(delay);
+			await tmux.sendKeys(tmuxSession, "");
+		}
 
 		// Auto-start watchdog if --watchdog flag is present
 		let watchdogPid: number | undefined;
@@ -389,15 +419,20 @@ async function startCoordinator(args: string[], deps: CoordinatorDeps = {}): Pro
 			}
 		}
 
-		// Auto-start monitor if --monitor flag is present
+		// Auto-start monitor if --monitor flag is present and tier2 is enabled
 		let monitorPid: number | undefined;
 		if (monitorFlag) {
-			const monitorResult = await monitor.start([]);
-			if (monitorResult) {
-				monitorPid = monitorResult.pid;
-				if (!json) process.stdout.write(`  Monitor:  started (PID ${monitorResult.pid})\n`);
+			if (!config.watchdog.tier2Enabled) {
+				if (!json)
+					process.stderr.write("  Monitor:  skipped (watchdog.tier2Enabled is false in config)\n");
 			} else {
-				if (!json) process.stderr.write("  Monitor:  failed to start or already running\n");
+				const monitorResult = await monitor.start([]);
+				if (monitorResult) {
+					monitorPid = monitorResult.pid;
+					if (!json) process.stdout.write(`  Monitor:  started (PID ${monitorResult.pid})\n`);
+				} else {
+					if (!json) process.stderr.write("  Monitor:  failed to start or already running\n");
+				}
 			}
 		}
 
@@ -439,7 +474,13 @@ async function startCoordinator(args: string[], deps: CoordinatorDeps = {}): Pro
  * 4. Auto-complete the active run (if current-run.txt exists)
  */
 async function stopCoordinator(args: string[], deps: CoordinatorDeps = {}): Promise<void> {
-	const tmux = deps._tmux ?? { createSession, isSessionAlive, killSession, sendKeys };
+	const tmux = deps._tmux ?? {
+		createSession,
+		isSessionAlive,
+		killSession,
+		sendKeys,
+		waitForTuiReady,
+	};
 
 	const json = args.includes("--json");
 	const cwd = process.cwd();
@@ -539,7 +580,13 @@ async function stopCoordinator(args: string[], deps: CoordinatorDeps = {}): Prom
  * Checks session registry and tmux liveness to report actual state.
  */
 async function statusCoordinator(args: string[], deps: CoordinatorDeps = {}): Promise<void> {
-	const tmux = deps._tmux ?? { createSession, isSessionAlive, killSession, sendKeys };
+	const tmux = deps._tmux ?? {
+		createSession,
+		isSessionAlive,
+		killSession,
+		sendKeys,
+		waitForTuiReady,
+	};
 
 	const json = args.includes("--json");
 	const cwd = process.cwd();

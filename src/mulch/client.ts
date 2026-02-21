@@ -43,6 +43,10 @@ export interface MulchClient {
 			classification?: string;
 			stdin?: boolean;
 			evidenceBead?: string;
+			outcomeStatus?: "success" | "failure";
+			outcomeDuration?: number;
+			outcomeTestResults?: string;
+			outcomeAgent?: string;
 		},
 	): Promise<void>;
 
@@ -50,7 +54,7 @@ export interface MulchClient {
 	query(domain?: string): Promise<string>;
 
 	/** Search records across all domains. */
-	search(query: string): Promise<string>;
+	search(query: string, options?: { file?: string; sortByScore?: boolean }): Promise<string>;
 
 	/** Show expertise record changes since a git ref. */
 	diff(options?: { since?: string }): Promise<MulchDiffResult>;
@@ -179,6 +183,18 @@ export function createMulchClient(cwd: string): MulchClient {
 			if (options.evidenceBead) {
 				args.push("--evidence-bead", options.evidenceBead);
 			}
+			if (options.outcomeStatus) {
+				args.push("--outcome-status", options.outcomeStatus);
+			}
+			if (options.outcomeDuration !== undefined) {
+				args.push("--outcome-duration", String(options.outcomeDuration));
+			}
+			if (options.outcomeTestResults) {
+				args.push("--outcome-test-results", options.outcomeTestResults);
+			}
+			if (options.outcomeAgent) {
+				args.push("--outcome-agent", options.outcomeAgent);
+			}
 			await runMulch(args, `record ${domain}`);
 		},
 
@@ -191,8 +207,11 @@ export function createMulchClient(cwd: string): MulchClient {
 			return stdout;
 		},
 
-		async search(query) {
-			const { stdout } = await runMulch(["search", query], "search");
+		async search(query, options) {
+			const args = ["search", query];
+			if (options?.file) args.push("--file", options.file);
+			if (options?.sortByScore) args.push("--sort-by-score");
+			const { stdout } = await runMulch(args, "search");
 			return stdout;
 		},
 

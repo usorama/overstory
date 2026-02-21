@@ -7,8 +7,12 @@
  */
 
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { ValidationError } from "../errors.ts";
+import { mkdir } from "node:fs/promises";
+import { join } from "node:path";
+import { AgentError, ValidationError } from "../errors.ts";
+import { cleanupTempDir, createTempGitRepo } from "../test-helpers.ts";
 import { buildMonitorBeacon, monitorCommand } from "./monitor.ts";
+import { isRunningAsRoot } from "./sling.ts";
 
 describe("buildMonitorBeacon", () => {
 	test("contains monitor agent name", () => {
@@ -134,5 +138,54 @@ describe("monitorCommand", () => {
 				throw err;
 			}
 		}
+	});
+
+	describe("tier2Enabled gate", () => {
+		let tempDir: string;
+		const originalCwd = process.cwd();
+
+		beforeEach(async () => {
+			process.chdir(originalCwd);
+			tempDir = await createTempGitRepo();
+			const overstoryDir = join(tempDir, ".overstory");
+			await mkdir(overstoryDir, { recursive: true });
+			// Write minimal config — tier2Enabled defaults to false
+			await Bun.write(
+				join(overstoryDir, "config.yaml"),
+				["project:", "  name: test-project", `  root: ${tempDir}`, "  canonicalBranch: main"].join(
+					"\n",
+				),
+			);
+			process.chdir(tempDir);
+		});
+
+		afterEach(async () => {
+			process.chdir(originalCwd);
+			await cleanupTempDir(tempDir);
+		});
+
+		test("monitor start throws AgentError when tier2Enabled is false (default)", async () => {
+			await expect(monitorCommand(["start"])).rejects.toThrow(AgentError);
+		});
+
+		test("monitor start error message contains 'disabled' when tier2Enabled is false", async () => {
+			try {
+				await monitorCommand(["start"]);
+				expect(true).toBe(false); // Should not reach here
+			} catch (err) {
+				if (err instanceof AgentError) {
+					expect(err.message).toContain("disabled");
+				} else {
+					throw err;
+				}
+			}
+		});
+	});
+});
+
+describe("isRunningAsRoot (imported from sling)", () => {
+	test("is accessible from monitor test file", () => {
+		expect(isRunningAsRoot(() => 0)).toBe(true);
+		expect(isRunningAsRoot(() => 1000)).toBe(false);
 	});
 });

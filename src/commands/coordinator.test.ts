@@ -25,6 +25,7 @@ import {
 	coordinatorCommand,
 	resolveAttach,
 } from "./coordinator.ts";
+import { isRunningAsRoot } from "./sling.ts";
 
 // --- Fake Tmux ---
 
@@ -39,6 +40,7 @@ interface TmuxCallTracker {
 	isSessionAlive: Array<{ name: string; result: boolean }>;
 	killSession: Array<{ name: string }>;
 	sendKeys: Array<{ name: string; keys: string }>;
+	waitForTuiReady: Array<{ name: string }>;
 }
 
 // --- Fake Watchdog ---
@@ -69,6 +71,7 @@ function makeFakeTmux(sessionAliveMap: Record<string, boolean> = {}): {
 		isSessionAlive: [],
 		killSession: [],
 		sendKeys: [],
+		waitForTuiReady: [],
 	};
 
 	const tmux: NonNullable<CoordinatorDeps["_tmux"]> = {
@@ -91,6 +94,10 @@ function makeFakeTmux(sessionAliveMap: Record<string, boolean> = {}): {
 		},
 		sendKeys: async (name: string, keys: string): Promise<void> => {
 			calls.sendKeys.push({ name, keys });
+		},
+		waitForTuiReady: async (name: string): Promise<boolean> => {
+			calls.waitForTuiReady.push({ name });
+			return true;
 		},
 	};
 
@@ -211,11 +218,17 @@ beforeEach(async () => {
 	await mkdir(overstoryDir, { recursive: true });
 
 	// Write a minimal config.yaml so loadConfig succeeds
+	// tier2Enabled: true so existing --monitor tests pass (new skipped tests override inline)
 	await Bun.write(
 		join(overstoryDir, "config.yaml"),
-		["project:", "  name: test-project", `  root: ${tempDir}`, "  canonicalBranch: main"].join(
-			"\n",
-		),
+		[
+			"project:",
+			"  name: test-project",
+			`  root: ${tempDir}`,
+			"  canonicalBranch: main",
+			"watchdog:",
+			"  tier2Enabled: true",
+		].join("\n"),
 	);
 
 	// Write agent-manifest.json and stub agent-def .md files so manifest loading succeeds
@@ -1284,6 +1297,66 @@ describe("monitor integration", () => {
 
 			expect(output).toContain("Monitor:  started (PID 77777)");
 		});
+
+		test("does NOT call monitor.start() when tier2Enabled is false", async () => {
+			// Override config with tier2Enabled: false
+			await Bun.write(
+				join(overstoryDir, "config.yaml"),
+				[
+					"project:",
+					"  name: test-project",
+					`  root: ${tempDir}`,
+					"  canonicalBranch: main",
+					"watchdog:",
+					"  tier2Enabled: false",
+				].join("\n"),
+			);
+			const { deps, monitorCalls } = makeDeps({}, undefined, { startSuccess: true });
+			const originalSleep = Bun.sleep;
+			Bun.sleep = (() => Promise.resolve()) as typeof Bun.sleep;
+
+			try {
+				await captureStdout(() => coordinatorCommand(["start", "--monitor", "--json"], deps));
+			} finally {
+				Bun.sleep = originalSleep;
+			}
+
+			expect(monitorCalls?.start).toBe(0);
+		});
+
+		test("text output shows skipped message when tier2Enabled is false", async () => {
+			// Override config with tier2Enabled: false
+			await Bun.write(
+				join(overstoryDir, "config.yaml"),
+				[
+					"project:",
+					"  name: test-project",
+					`  root: ${tempDir}`,
+					"  canonicalBranch: main",
+					"watchdog:",
+					"  tier2Enabled: false",
+				].join("\n"),
+			);
+			const { deps } = makeDeps({}, undefined, { startSuccess: true });
+			const originalSleep = Bun.sleep;
+			Bun.sleep = (() => Promise.resolve()) as typeof Bun.sleep;
+
+			let stderrOutput = "";
+			const origStderrWrite = process.stderr.write.bind(process.stderr);
+			process.stderr.write = (chunk: string | Uint8Array) => {
+				stderrOutput += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+				return true;
+			};
+
+			try {
+				await captureStdout(() => coordinatorCommand(["start", "--monitor", "--no-attach"], deps));
+			} finally {
+				Bun.sleep = originalSleep;
+				process.stderr.write = origStderrWrite;
+			}
+
+			expect(stderrOutput).toContain("skipped");
+		});
 	});
 
 	describe("stopCoordinator monitor cleanup", () => {
@@ -1435,5 +1508,12 @@ describe("SessionStore round-trip", () => {
 		const dbPath = join(overstoryDir, "sessions.db");
 		const exists = Bun.file(dbPath).size > 0;
 		expect(exists).toBe(true);
+	});
+});
+
+describe("isRunningAsRoot (imported from sling)", () => {
+	test("is accessible from coordinator test file", () => {
+		expect(isRunningAsRoot(() => 0)).toBe(true);
+		expect(isRunningAsRoot(() => 1000)).toBe(false);
 	});
 });

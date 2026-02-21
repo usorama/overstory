@@ -7,6 +7,122 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.8] - 2026-02-20
+
+### Added
+
+#### Provider Model Resolution
+- `ResolvedModel` type and provider gateway support in `resolveModel()` — resolves `ModelRef` strings (e.g., `openrouter/openai/gpt-5.3`) through configured provider gateways with `baseUrl` and `authTokenEnv`
+- Provider and model validation in `validateConfig()` — validates provider types (`native`/`gateway`), required gateway fields (`baseUrl`), and model reference format at config load time
+- Provider environment variables now threaded through all agent spawn commands (`sling`, `coordinator`, `supervisor`, `monitor`) — gateway `authTokenEnv` values are passed to spawned agent processes
+
+#### Mulch Integration
+- Auto-infer mulch domains from file scope in `overstory sling` — `inferDomainsFromFiles()` maps file paths to domains (e.g., `src/commands/*.ts` → `cli`, `src/agents/*.ts` → `agents`) instead of always using configured defaults
+- Outcome flags for `MulchClient.record()` — `--outcome-status`, `--outcome-duration`, `--outcome-test-results`, `--outcome-agent` for structured outcome tracking
+- File-scoped search in `MulchClient.search()` — `--file` and `--sort-by-score` options for targeted expertise queries
+- PostToolUse Bash hook in hooks template and init — runs `mulch diff` after git commits to auto-detect expertise changes
+
+#### Agent Definition Updates
+- Builder completion protocol includes outcome data flags (`--outcome-status success --outcome-agent $OVERSTORY_AGENT_NAME`)
+- Lead and supervisor agents get file-scoped mulch search capability (`mulch search <query> --file <path>`)
+- Overlay quality gates include outcome flags for mulch recording
+
+#### Dashboard Performance
+- `limit` option added to `MailStore.getAll()` — dashboard now fetches only the most recent messages instead of the full mailbox
+- Persistent DB connections across dashboard poll ticks — `SessionStore`, `EventStore`, `MailStore`, and `MetricsStore` connections are now opened once and reused, eliminating per-tick open/close overhead
+
+#### Testing
+- Test suite grew from 1916 to 1996 tests across 73 files (4960 expect() calls)
+
+### Fixed
+- Zombie agent recovery — `updateLastActivity` now recovers agents from "zombie" state when hooks prove they're alive (previously only recovered from "booting")
+- Dashboard `.repeat()` crash when negative values were passed — now clamps repeat count to minimum of 0
+- Set-based tmux session lookup in `status.ts` replacing O(n) array scans with O(1) Set membership checks
+- Subprocess cache in `status.ts` preventing redundant `tmux list-sessions` calls during a single status gather
+- Null-runId sessions (coordinator) now included in run-scoped status and dashboard views — previously filtered out when `--all` was not specified
+- Sparse file used in logs doctor test to prevent timeout on large log directory scans
+- Beacon submission reliability — replaced fixed sleep with poll-based TUI readiness check (PR #19, thanks [@dmfaux](https://github.com/dmfaux)!)
+- Biome formatting in hooks-deployer test and sling
+
+## [0.5.7] - 2026-02-19
+
+### Added
+
+#### Provider Types
+- `ModelAlias`, `ModelRef`, and `ProviderConfig` types in `types.ts` — foundation for multi-provider model routing (`native` and `gateway` provider types with `baseUrl` and `authTokenEnv` configuration)
+- `providers` field in `OverstoryConfig` — `Record<string, ProviderConfig>` for configuring model providers per project
+- `resolveModel()` signature updated to accept `ModelRef` (provider-qualified strings like `openrouter/openai/gpt-5.3`) alongside simple `ModelAlias` values
+
+#### Costs Command
+- `--self` flag for `overstory costs` — parse the current orchestrator session's Claude Code transcript directly, bypassing metrics.db, useful for real-time cost visibility without agent infrastructure
+
+#### Metrics
+- `run_id` column added to `metrics.db` sessions table — enables `overstory costs --run <id>` filtering to work correctly; includes automatic migration for existing databases
+
+#### Watchdog
+- Phase-aware `buildCompletionMessage()` in watchdog daemon — generates targeted completion nudge messages based on worker capability composition (single-capability batches get phase-specific messages like "Ready for next phase", mixed batches get a summary with breakdown)
+
+#### Testing
+- Test suite grew from 1892 to 1916 tests across 73 files (4866 expect() calls)
+
+## [0.5.6] - 2026-02-18
+
+### Added
+
+#### Safety Guards
+- Root-user pre-flight guard on all agent spawn commands (`sling`, `coordinator start`, `supervisor start`, `monitor start`) — blocks spawning when running as UID 0, since the `claude` CLI rejects `--dangerously-skip-permissions` as root causing tmux sessions to die immediately
+- Unmerged branch safety check in `overstory worktree clean` — skips worktrees with unmerged branches by default, warns about skipped branches, and requires `--force` to delete them
+
+#### Init Improvements
+- `.overstory/README.md` generation during `overstory init` — explains the directory to contributors who encounter `.overstory/` in a project, whitelisted in `.gitignore`
+
+#### Tier 2 Monitor Config Gating
+- `overstory monitor start` now gates on `watchdog.tier2Enabled` config flag — throws a clear error when Tier 2 is disabled instead of silently proceeding
+- `overstory coordinator start --monitor` respects `tier2Enabled` — skips monitor auto-start with a message when disabled
+
+#### Tmux Error Handling
+- `sendKeys` now distinguishes "tmux server not running" from "session not found" — provides actionable error messages for each case (e.g., root-user hint for server-not-running)
+
+#### Documentation
+- Lead agent definition (`agents/lead.md`) reframed as coordinator-not-doer — emphasizes the lead's role as a delegation specialist rather than an implementer
+
+#### Testing
+- Test suite grew from 1868 to 1892 tests across 73 files (4807 expect() calls)
+
+### Fixed
+- Biome formatting in merged builder code
+
+## [0.5.5] - 2026-02-18
+
+### Added
+
+#### Run Scoping
+- `overstory status` now scopes to the current run by default with `--all` flag to show all runs — `gatherStatus()` filters sessions by `runId` when present
+- `overstory dashboard` now scopes all panels to the current run by default with `--all` flag to show data across all runs
+
+#### Config Local Overrides
+- `config.local.yaml` support for machine-specific configuration overrides — values in `config.local.yaml` are deep-merged over `config.yaml`, allowing per-machine settings (model overrides, paths, watchdog intervals) without modifying the tracked config file (PR #9)
+
+#### Universal Push Guard
+- PreToolUse hooks template now includes a universal `git push` guard — blocks all `git push` commands for all agents (previously only blocked push to canonical branches)
+
+#### Watchdog Run-Completion Detection
+- Watchdog daemon tick now detects when all agents in the current run have completed and auto-reports run completion
+
+#### Lead Agent Streaming
+- Lead agents now stream `merge_ready` messages per-builder as each completes, instead of batching all merge signals — enables earlier merge pipeline starts
+
+#### Claude Code Command Skills
+- Added `issue-reviews` and `pr-reviews` skills for reviewing GitHub issues and pull requests from within Claude Code
+
+#### Testing
+- Test suite grew from 1848 to 1868 tests across 73 files (4771 expect() calls)
+
+### Fixed
+- `overstory sling` now uses `resolveModel()` for config-level model overrides — previously ignored `models:` config section when spawning agents
+- `overstory doctor` dependency check now detects `bd` CGO/Dolt backend failures — catches cases where `bd` binary exists but crashes due to missing CGO dependencies (PR #11)
+- Biome line width formatting in `src/doctor/consistency.ts`
+
 ## [0.5.4] - 2026-02-17
 
 ### Added
@@ -331,7 +447,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Biome configuration for formatting and linting
 - TypeScript strict mode with `noUncheckedIndexedAccess`
 
-[Unreleased]: https://github.com/jayminwest/overstory/compare/v0.5.4...HEAD
+[Unreleased]: https://github.com/jayminwest/overstory/compare/v0.5.8...HEAD
+[0.5.8]: https://github.com/jayminwest/overstory/compare/v0.5.7...v0.5.8
+[0.5.7]: https://github.com/jayminwest/overstory/compare/v0.5.6...v0.5.7
+[0.5.6]: https://github.com/jayminwest/overstory/compare/v0.5.5...v0.5.6
+[0.5.5]: https://github.com/jayminwest/overstory/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/jayminwest/overstory/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/jayminwest/overstory/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/jayminwest/overstory/compare/v0.5.1...v0.5.2

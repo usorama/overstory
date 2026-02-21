@@ -16,6 +16,54 @@ import type { AgentSession } from "../types.ts";
 import { listWorktrees } from "../worktree/manager.ts";
 import { listSessions } from "../worktree/tmux.ts";
 
+// ---------------------------------------------------------------------------
+// Subprocess result cache (TTL-based, module-level)
+// ---------------------------------------------------------------------------
+
+interface CacheEntry<T> {
+	data: T;
+	timestamp: number;
+}
+
+let worktreeCache: CacheEntry<Array<{ path: string; branch: string; head: string }>> | null = null;
+let tmuxCache: CacheEntry<Array<{ name: string; pid: number }>> | null = null;
+
+const DEFAULT_CACHE_TTL_MS = 10_000; // 10 seconds
+
+export function invalidateStatusCache(): void {
+	worktreeCache = null;
+	tmuxCache = null;
+}
+
+export async function getCachedWorktrees(
+	root: string,
+	ttlMs: number = DEFAULT_CACHE_TTL_MS,
+): Promise<Array<{ path: string; branch: string; head: string }>> {
+	const now = Date.now();
+	if (worktreeCache && now - worktreeCache.timestamp < ttlMs) {
+		return worktreeCache.data;
+	}
+	const data = await listWorktrees(root);
+	worktreeCache = { data, timestamp: now };
+	return data;
+}
+
+export async function getCachedTmuxSessions(
+	ttlMs: number = DEFAULT_CACHE_TTL_MS,
+): Promise<Array<{ name: string; pid: number }>> {
+	const now = Date.now();
+	if (tmuxCache && now - tmuxCache.timestamp < ttlMs) {
+		return tmuxCache.data;
+	}
+	try {
+		const data = await listSessions();
+		tmuxCache = { data, timestamp: now };
+		return data;
+	} catch {
+		return tmuxCache?.data ?? [];
+	}
+}
+
 /**
  * Parse a named flag value from args.
  */
@@ -54,6 +102,7 @@ export interface VerboseAgentDetail {
 }
 
 export interface StatusData {
+	currentRunId?: string | null;
 	agents: AgentSession[];
 	worktrees: Array<{ path: string; branch: string; head: string }>;
 	tmuxSessions: Array<{ name: string; pid: number }>;
@@ -63,41 +112,54 @@ export interface StatusData {
 	verboseDetails?: Record<string, VerboseAgentDetail>;
 }
 
+async function readCurrentRunId(overstoryDir: string): Promise<string | null> {
+	const path = join(overstoryDir, "current-run.txt");
+	const file = Bun.file(path);
+	if (!(await file.exists())) {
+		return null;
+	}
+	const text = await file.text();
+	const trimmed = text.trim();
+	return trimmed.length > 0 ? trimmed : null;
+}
+
 /**
  * Gather all status data.
  * @param agentName - Which agent's perspective for unread mail count (default "orchestrator")
  * @param verbose - When true, collect extra per-agent detail (worktree path, logs dir, last mail)
+ * @param runId - When provided, only sessions for that run are returned; null/undefined shows all
  */
 export async function gatherStatus(
 	root: string,
 	agentName = "orchestrator",
 	verbose = false,
+	runId?: string | null,
 ): Promise<StatusData> {
 	const overstoryDir = join(root, ".overstory");
 	const { store } = openSessionStore(overstoryDir);
 
 	let sessions: AgentSession[];
 	try {
-		sessions = store.getAll();
+		// When run-scoped, also include sessions with null runId (e.g. coordinator)
+		// because SQL WHERE run_id = $run_id never matches NULL rows.
+		sessions = runId
+			? [...store.getByRun(runId), ...store.getAll().filter((s) => s.runId === null)]
+			: store.getAll();
 
-		const worktrees = await listWorktrees(root);
+		const worktrees = await getCachedWorktrees(root);
 
-		let tmuxSessions: Array<{ name: string; pid: number }> = [];
-		try {
-			tmuxSessions = await listSessions();
-		} catch {
-			// tmux might not be running
-		}
+		const tmuxSessions = await getCachedTmuxSessions();
 
 		// Reconcile agent states: if tmux session is dead but agent state
 		// indicates it should be alive, mark it as zombie
+		const tmuxSessionNames = new Set(tmuxSessions.map((s) => s.name));
 		for (const session of sessions) {
 			if (
 				session.state === "booting" ||
 				session.state === "working" ||
 				session.state === "stalled"
 			) {
-				const tmuxAlive = tmuxSessions.some((s) => s.name === session.tmuxSession);
+				const tmuxAlive = tmuxSessionNames.has(session.tmuxSession);
 				if (!tmuxAlive) {
 					try {
 						store.updateState(session.agentName, "zombie");
@@ -184,6 +246,7 @@ export async function gatherStatus(
 		}
 
 		return {
+			currentRunId: runId,
 			agents: sessions,
 			worktrees,
 			tmuxSessions,
@@ -206,18 +269,22 @@ export function printStatus(data: StatusData): void {
 
 	w("📊 Overstory Status\n");
 	w(`${"═".repeat(60)}\n\n`);
+	if (data.currentRunId) {
+		w(`🏃 Run: ${data.currentRunId}\n`);
+	}
 
 	// Active agents
 	const active = data.agents.filter((a) => a.state !== "zombie" && a.state !== "completed");
 	w(`🤖 Agents: ${active.length} active\n`);
 	if (active.length > 0) {
+		const tmuxSessionNames = new Set(data.tmuxSessions.map((s) => s.name));
 		for (const agent of active) {
 			const endTime =
 				agent.state === "completed" || agent.state === "zombie"
 					? new Date(agent.lastActivity).getTime()
 					: now;
 			const duration = formatDuration(endTime - new Date(agent.startedAt).getTime());
-			const tmuxAlive = data.tmuxSessions.some((s) => s.name === agent.tmuxSession);
+			const tmuxAlive = tmuxSessionNames.has(agent.tmuxSession);
 			const aliveMarker = tmuxAlive ? "●" : "○";
 			w(`   ${aliveMarker} ${agent.agentName} [${agent.capability}] `);
 			w(`${agent.state} | ${agent.beadId} | ${duration}\n`);
@@ -261,12 +328,13 @@ export function printStatus(data: StatusData): void {
  */
 const STATUS_HELP = `overstory status — Show all active agents and project state
 
-Usage: overstory status [--json] [--verbose] [--agent <name>]
+Usage: overstory status [--json] [--verbose] [--agent <name>] [--all]
 
 Options:
   --json             Output as JSON
   --verbose          Show extra detail per agent (worktree, logs, mail timestamps)
   --agent <name>     Show unread mail for this agent (default: orchestrator)
+  --all              Show sessions from all runs (default: current run only)
   --watch            (deprecated) Use 'overstory dashboard' for live monitoring
   --interval <ms>    Poll interval for --watch in milliseconds (default: 3000)
   --help, -h         Show this help`;
@@ -280,6 +348,7 @@ export async function statusCommand(args: string[]): Promise<void> {
 	const json = hasFlag(args, "--json");
 	const watch = hasFlag(args, "--watch");
 	const verbose = hasFlag(args, "--verbose");
+	const all = hasFlag(args, "--all");
 	const intervalStr = getFlag(args, "--interval");
 	const interval = intervalStr ? Number.parseInt(intervalStr, 10) : 3000;
 
@@ -296,6 +365,12 @@ export async function statusCommand(args: string[]): Promise<void> {
 	const config = await loadConfig(cwd);
 	const root = config.project.root;
 
+	let runId: string | null | undefined;
+	if (!all) {
+		const overstoryDir = join(root, ".overstory");
+		runId = await readCurrentRunId(overstoryDir);
+	}
+
 	if (watch) {
 		process.stderr.write(
 			"⚠️  --watch is deprecated. Use 'overstory dashboard' for live monitoring.\n\n",
@@ -304,7 +379,7 @@ export async function statusCommand(args: string[]): Promise<void> {
 		while (true) {
 			// Clear screen
 			process.stdout.write("\x1b[2J\x1b[H");
-			const data = await gatherStatus(root, agentName, verbose);
+			const data = await gatherStatus(root, agentName, verbose, runId);
 			if (json) {
 				process.stdout.write(`${JSON.stringify(data, null, "\t")}\n`);
 			} else {
@@ -313,7 +388,7 @@ export async function statusCommand(args: string[]): Promise<void> {
 			await Bun.sleep(interval);
 		}
 	} else {
-		const data = await gatherStatus(root, agentName, verbose);
+		const data = await gatherStatus(root, agentName, verbose, runId);
 		if (json) {
 			process.stdout.write(`${JSON.stringify(data, null, "\t")}\n`);
 		} else {

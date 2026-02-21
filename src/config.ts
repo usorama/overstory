@@ -34,11 +34,14 @@ export const DEFAULT_CONFIG: OverstoryConfig = {
 		aiResolveEnabled: true,
 		reimagineEnabled: false,
 	},
+	providers: {
+		anthropic: { type: "native" },
+	},
 	watchdog: {
 		tier0Enabled: true, // Tier 0: Mechanical daemon
 		tier0IntervalMs: 30_000,
-		tier1Enabled: false, // Tier 1: Triage agent (AI analysis via claude --print)
-		tier2Enabled: false, // Tier 2: Monitor agent (persistent fleet patrol)
+		tier1Enabled: false, // Tier 1: Triage agent (AI analysis)
+		tier2Enabled: false, // Tier 2: Monitor agent (continuous patrol)
 		staleThresholdMs: 300_000, // 5 minutes
 		zombieThresholdMs: 600_000, // 10 minutes
 		nudgeIntervalMs: 60_000, // 1 minute between progressive nudge stages
@@ -417,14 +420,77 @@ function validateConfig(config: OverstoryConfig): void {
 		});
 	}
 
-	// models: each value must be a valid model name
-	const validModels = ["sonnet", "opus", "haiku"];
-	for (const [role, model] of Object.entries(config.models)) {
-		if (model !== undefined && !validModels.includes(model)) {
-			throw new ValidationError(`models.${role} must be one of: ${validModels.join(", ")}`, {
-				field: `models.${role}`,
-				value: model,
+	// providers: validate each entry
+	const validProviderTypes = ["native", "gateway"];
+	for (const [name, provider] of Object.entries(config.providers)) {
+		const p = provider as unknown;
+		if (p === null || typeof p !== "object") {
+			throw new ValidationError(`providers.${name} must be an object`, {
+				field: `providers.${name}`,
+				value: p,
 			});
+		}
+		if (!validProviderTypes.includes(provider.type)) {
+			throw new ValidationError(
+				`providers.${name}.type must be one of: ${validProviderTypes.join(", ")}`,
+				{
+					field: `providers.${name}.type`,
+					value: provider.type,
+				},
+			);
+		}
+		if (provider.type === "gateway") {
+			if (!provider.baseUrl || typeof provider.baseUrl !== "string") {
+				throw new ValidationError(`providers.${name}.baseUrl is required for gateway providers`, {
+					field: `providers.${name}.baseUrl`,
+					value: provider.baseUrl,
+				});
+			}
+			if (!provider.authTokenEnv || typeof provider.authTokenEnv !== "string") {
+				throw new ValidationError(
+					`providers.${name}.authTokenEnv is required for gateway providers`,
+					{
+						field: `providers.${name}.authTokenEnv`,
+						value: provider.authTokenEnv,
+					},
+				);
+			}
+		}
+	}
+
+	// models: validate each value — accepts aliases and provider-prefixed refs
+	const validAliases = ["sonnet", "opus", "haiku"];
+	const toolHeavyRoles = ["builder", "scout"];
+	for (const [role, model] of Object.entries(config.models)) {
+		if (model === undefined) continue;
+		if (model.includes("/")) {
+			// Provider-prefixed ref: validate the provider name exists
+			const providerName = model.split("/")[0] ?? "";
+			if (!providerName || !(providerName in config.providers)) {
+				throw new ValidationError(
+					`models.${role} references unknown provider '${providerName}'. Add it to the providers section first.`,
+					{
+						field: `models.${role}`,
+						value: model,
+					},
+				);
+			}
+			if (toolHeavyRoles.includes(role)) {
+				process.stderr.write(
+					`[overstory] WARNING: models.${role} uses non-Anthropic model '${model}'. Tool-use compatibility cannot be verified at config time.\n`,
+				);
+			}
+		} else {
+			// Must be a valid alias
+			if (!validAliases.includes(model)) {
+				throw new ValidationError(
+					`models.${role} must be a valid alias (${validAliases.join(", ")}) or a provider-prefixed ref (e.g., openrouter/openai/gpt-4)`,
+					{
+						field: `models.${role}`,
+						value: model,
+					},
+				);
+			}
 		}
 	}
 }

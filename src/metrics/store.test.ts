@@ -46,6 +46,7 @@ function makeSession(overrides: Partial<SessionMetrics> = {}): SessionMetrics {
 		cacheCreationTokens: 0,
 		estimatedCostUsd: null,
 		modelUsed: null,
+		runId: null,
 		...overrides,
 	};
 }
@@ -370,6 +371,31 @@ describe("token fields", () => {
 		expect(newSessions).toHaveLength(1);
 		expect(newSessions[0]?.inputTokens).toBe(5000);
 		expect(newSessions[0]?.estimatedCostUsd).toBeCloseTo(0.42, 2);
+	});
+});
+
+// === getSessionsByRun ===
+
+describe("getSessionsByRun", () => {
+	test("returns sessions matching run_id", () => {
+		store.recordSession(makeSession({ agentName: "a1", beadId: "t1", runId: "run-001" }));
+		store.recordSession(makeSession({ agentName: "a2", beadId: "t2", runId: "run-001" }));
+		store.recordSession(makeSession({ agentName: "a3", beadId: "t3", runId: "run-002" }));
+
+		const sessions = store.getSessionsByRun("run-001");
+		expect(sessions).toHaveLength(2);
+		expect(sessions.every((s) => s.runId === "run-001")).toBe(true);
+	});
+
+	test("returns empty array for unknown run_id", () => {
+		store.recordSession(makeSession({ agentName: "a1", beadId: "t1", runId: "run-001" }));
+		expect(store.getSessionsByRun("run-nonexistent")).toEqual([]);
+	});
+
+	test("sessions with null run_id are not returned", () => {
+		store.recordSession(makeSession({ agentName: "a1", beadId: "t1", runId: null }));
+		store.recordSession(makeSession({ agentName: "a2", beadId: "t2", runId: "run-001" }));
+		expect(store.getSessionsByRun("run-001")).toHaveLength(1);
 	});
 });
 

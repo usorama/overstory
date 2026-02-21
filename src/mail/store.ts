@@ -16,7 +16,7 @@ export interface MailStore {
 		message: Omit<MailMessage, "read" | "createdAt" | "payload"> & { payload?: string | null },
 	): MailMessage;
 	getUnread(agentName: string): MailMessage[];
-	getAll(filters?: { from?: string; to?: string; unread?: boolean }): MailMessage[];
+	getAll(filters?: { from?: string; to?: string; unread?: boolean; limit?: number }): MailMessage[];
 	getById(id: string): MailMessage | null;
 	getByThread(threadId: string): MailMessage[];
 	markRead(id: string): void;
@@ -236,6 +236,7 @@ export function createMailStore(dbPath: string): MailStore {
 		from?: string;
 		to?: string;
 		unread?: boolean;
+		limit?: number;
 	}): MailMessage[] {
 		const conditions: string[] = [];
 		const params: Record<string, string | number> = {};
@@ -254,7 +255,11 @@ export function createMailStore(dbPath: string): MailStore {
 		}
 
 		const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-		const query = `SELECT * FROM messages ${whereClause} ORDER BY created_at DESC`;
+		const limitClause = filters?.limit !== undefined ? ` LIMIT $limit` : "";
+		if (filters?.limit !== undefined) {
+			params.$limit = filters.limit;
+		}
+		const query = `SELECT * FROM messages ${whereClause} ORDER BY created_at DESC${limitClause}`;
 		const stmt = db.prepare<MessageRow, Record<string, string | number>>(query);
 		const rows = stmt.all(params);
 		return rows.map(rowToMessage);
@@ -305,7 +310,12 @@ export function createMailStore(dbPath: string): MailStore {
 			return rows.map(rowToMessage);
 		},
 
-		getAll(filters?: { from?: string; to?: string; unread?: boolean }): MailMessage[] {
+		getAll(filters?: {
+			from?: string;
+			to?: string;
+			unread?: boolean;
+			limit?: number;
+		}): MailMessage[] {
 			return buildFilterQuery(filters);
 		},
 

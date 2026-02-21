@@ -408,6 +408,59 @@ export async function isSessionAlive(name: string): Promise<boolean> {
 }
 
 /**
+ * Capture the visible content of a tmux session's pane.
+ *
+ * @param name - Session name to capture from
+ * @param lines - Number of history lines to capture (default 50)
+ * @returns The trimmed pane content, or null if capture fails
+ */
+export async function capturePaneContent(name: string, lines = 50): Promise<string | null> {
+	const { exitCode, stdout } = await runCommand([
+		"tmux",
+		"capture-pane",
+		"-t",
+		name,
+		"-p",
+		"-S",
+		`-${lines}`,
+	]);
+	if (exitCode !== 0) {
+		return null;
+	}
+	const content = stdout.trim();
+	return content.length > 0 ? content : null;
+}
+
+/**
+ * Wait for a tmux session's TUI to become ready for input.
+ *
+ * Polls capture-pane until non-empty content appears, indicating the
+ * process has started and rendered output. More reliable than a fixed
+ * sleep because TUI init time varies by machine load, model download
+ * state, and extension loading.
+ *
+ * @param name - Tmux session name to poll
+ * @param timeoutMs - Maximum time to wait before giving up (default 15s)
+ * @param pollIntervalMs - Time between polls (default 500ms)
+ * @returns true once content is detected, false on timeout
+ */
+export async function waitForTuiReady(
+	name: string,
+	timeoutMs = 15_000,
+	pollIntervalMs = 500,
+): Promise<boolean> {
+	const maxAttempts = Math.ceil(timeoutMs / pollIntervalMs);
+	for (let i = 0; i < maxAttempts; i++) {
+		const content = await capturePaneContent(name);
+		if (content !== null) {
+			return true;
+		}
+		await Bun.sleep(pollIntervalMs);
+	}
+	return false;
+}
+
+/**
  * Send keys to a tmux session.
  *
  * @param name - Session name to send keys to
@@ -429,7 +482,27 @@ export async function sendKeys(name: string, keys: string): Promise<void> {
 	]);
 
 	if (exitCode !== 0) {
-		throw new AgentError(`Failed to send keys to tmux session "${name}": ${stderr.trim()}`, {
+		const trimmedStderr = stderr.trim();
+
+		if (trimmedStderr.includes("no server running")) {
+			throw new AgentError(
+				`Tmux server is not running (cannot reach session "${name}"). This often happens when running as root (UID 0) or when tmux crashed. Original error: ${trimmedStderr}`,
+				{ agentName: name },
+			);
+		}
+
+		if (
+			trimmedStderr.includes("session not found") ||
+			trimmedStderr.includes("can't find session") ||
+			trimmedStderr.includes("cant find session")
+		) {
+			throw new AgentError(
+				`Tmux session "${name}" does not exist. The agent may have crashed or been killed before receiving input.`,
+				{ agentName: name },
+			);
+		}
+
+		throw new AgentError(`Failed to send keys to tmux session "${name}": ${trimmedStderr}`, {
 			agentName: name,
 		});
 	}

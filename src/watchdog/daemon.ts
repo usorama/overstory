@@ -34,6 +34,12 @@ import { triageAgent } from "./triage.ts";
 const MAX_ESCALATION_LEVEL = 3;
 
 /**
+ * Persistent agent capabilities that are excluded from run-level completion checks.
+ * These agents are long-running and should not count toward "all workers done".
+ */
+const PERSISTENT_CAPABILITIES = new Set(["coordinator", "monitor"]);
+
+/**
  * Record an agent failure to mulch for future reference.
  * Fire-and-forget: never throws, logs errors internally if mulch fails.
  *
@@ -121,6 +127,122 @@ function recordEvent(
 		});
 	} catch {
 		// Fire-and-forget: event recording must never break the daemon
+	}
+}
+
+/**
+ * Build a phase-aware completion message based on the capabilities of completed workers.
+ *
+ * Single-capability batches get targeted messages (e.g. scouts → "Ready for next phase"),
+ * while mixed-capability batches get a generic summary with a breakdown.
+ */
+export function buildCompletionMessage(
+	workerSessions: readonly AgentSession[],
+	runId: string,
+): string {
+	const capabilities = new Set(workerSessions.map((s) => s.capability));
+	const count = workerSessions.length;
+
+	if (capabilities.size === 1) {
+		if (capabilities.has("scout")) {
+			return `[WATCHDOG] All ${count} scout(s) in run ${runId} have completed. Ready for next phase.`;
+		}
+		if (capabilities.has("builder")) {
+			return `[WATCHDOG] All ${count} builder(s) in run ${runId} have completed. Ready for merge/cleanup.`;
+		}
+		if (capabilities.has("reviewer")) {
+			return `[WATCHDOG] All ${count} reviewer(s) in run ${runId} have completed. Reviews done.`;
+		}
+		if (capabilities.has("lead")) {
+			return `[WATCHDOG] All ${count} lead(s) in run ${runId} have completed. Ready for merge/cleanup.`;
+		}
+		if (capabilities.has("merger")) {
+			return `[WATCHDOG] All ${count} merger(s) in run ${runId} have completed. Merges done.`;
+		}
+	}
+
+	const breakdown = Array.from(capabilities).sort().join(", ");
+	return `[WATCHDOG] All ${count} worker(s) in run ${runId} have completed (${breakdown}). Ready for next steps.`;
+}
+
+/**
+ * Check if all worker sessions for the active run have completed, and if so,
+ * nudge the coordinator. Fire-and-forget: never throws.
+ *
+ * Deduplication: uses a marker file (run-complete-notified.txt) to prevent
+ * repeated nudges for the same run ID.
+ */
+async function checkRunCompletion(ctx: {
+	store: { getByRun: (runId: string) => AgentSession[] };
+	runId: string;
+	overstoryDir: string;
+	root: string;
+	nudge: (
+		projectRoot: string,
+		agentName: string,
+		message: string,
+		force: boolean,
+	) => Promise<{ delivered: boolean; reason?: string }>;
+	eventStore: EventStore | null;
+}): Promise<void> {
+	const { store, runId, overstoryDir, root, nudge, eventStore } = ctx;
+
+	const runSessions = store.getByRun(runId);
+	const workerSessions = runSessions.filter((s) => !PERSISTENT_CAPABILITIES.has(s.capability));
+
+	if (workerSessions.length === 0) {
+		return;
+	}
+
+	const allCompleted = workerSessions.every((s) => s.state === "completed");
+	if (!allCompleted) {
+		return;
+	}
+
+	// Dedup: check marker file
+	const markerPath = join(overstoryDir, "run-complete-notified.txt");
+	try {
+		const file = Bun.file(markerPath);
+		if (await file.exists()) {
+			const existing = await file.text();
+			if (existing.trim() === runId) {
+				return; // Already notified
+			}
+		}
+	} catch {
+		// Read failure is non-fatal — proceed with nudge
+	}
+
+	// Nudge the coordinator
+	const message = buildCompletionMessage(workerSessions, runId);
+	try {
+		await nudge(root, "coordinator", message, true);
+	} catch {
+		// Nudge delivery failure is non-fatal
+	}
+
+	// Record the event
+	const capabilitiesArr = Array.from(new Set(workerSessions.map((s) => s.capability))).sort();
+	const phase = capabilitiesArr.length === 1 ? capabilitiesArr[0] : "mixed";
+	recordEvent(eventStore, {
+		runId,
+		agentName: "watchdog",
+		eventType: "custom",
+		level: "info",
+		data: {
+			type: "run_complete",
+			workerCount: workerSessions.length,
+			completedAgents: workerSessions.map((s) => s.agentName),
+			capabilities: capabilitiesArr,
+			phase,
+		},
+	});
+
+	// Write dedup marker
+	try {
+		await Bun.write(markerPath, runId);
+	} catch {
+		// Marker write failure is non-fatal
 	}
 }
 
@@ -352,6 +474,19 @@ export async function runDaemonTick(options: DaemonOptions): Promise<void> {
 				session.stalledSince = null;
 				session.escalationLevel = 0;
 			}
+		}
+
+		// === Run-level completion detection ===
+		// After monitoring individual sessions, check if the entire run is done.
+		if (runId) {
+			await checkRunCompletion({
+				store,
+				runId,
+				overstoryDir,
+				root,
+				nudge,
+				eventStore,
+			});
 		}
 	} finally {
 		store.close();

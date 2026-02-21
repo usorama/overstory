@@ -3,7 +3,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { createSessionStore } from "../sessions/store.ts";
-import { cleanupTempDir, createTempGitRepo, runGitInDir } from "../test-helpers.ts";
+import { cleanupTempDir, commitFile, createTempGitRepo, runGitInDir } from "../test-helpers.ts";
 import type { AgentSession } from "../types.ts";
 import { createWorktree } from "../worktree/manager.ts";
 import { worktreeCommand } from "./worktree.ts";
@@ -634,6 +634,153 @@ describe("worktreeCommand", () => {
 			const out = output();
 
 			expect(out).toContain("Cleaned 2 worktrees");
+		});
+
+		test("without --force, skips worktrees with unmerged branches and prints warning", async () => {
+			const worktreesDir = join(tempDir, ".overstory", "worktrees");
+			await mkdir(worktreesDir, { recursive: true });
+
+			const { path: wtPath } = await createWorktree({
+				repoRoot: tempDir,
+				baseDir: worktreesDir,
+				agentName: "unmerged-agent",
+				baseBranch: "main",
+				beadId: "task-unmerged",
+			});
+
+			// Add an unmerged commit
+			await commitFile(wtPath, "work.ts", "export const y = 2;", "unmerged work");
+
+			writeSessionsToStore([
+				makeSession({
+					id: "session-u",
+					agentName: "unmerged-agent",
+					worktreePath: wtPath,
+					branchName: "overstory/unmerged-agent/task-unmerged",
+					beadId: "task-unmerged",
+					state: "completed",
+				}),
+			]);
+
+			await worktreeCommand(["clean"]);
+			const out = output();
+
+			// Worktree should NOT have been removed
+			expect(existsSync(wtPath)).toBe(true);
+			// Warning should be printed
+			expect(out).toContain("Skipped 1 worktree");
+			expect(out).toContain("overstory/unmerged-agent/task-unmerged");
+			expect(out).toContain("--force");
+		});
+
+		test("with --force, deletes worktrees with unmerged branches", async () => {
+			const worktreesDir = join(tempDir, ".overstory", "worktrees");
+			await mkdir(worktreesDir, { recursive: true });
+
+			const { path: wtPath } = await createWorktree({
+				repoRoot: tempDir,
+				baseDir: worktreesDir,
+				agentName: "unmerged-agent",
+				baseBranch: "main",
+				beadId: "task-force",
+			});
+
+			// Add an unmerged commit
+			await commitFile(wtPath, "work.ts", "export const y = 2;", "unmerged work");
+
+			writeSessionsToStore([
+				makeSession({
+					id: "session-f",
+					agentName: "unmerged-agent",
+					worktreePath: wtPath,
+					branchName: "overstory/unmerged-agent/task-force",
+					beadId: "task-force",
+					state: "completed",
+				}),
+			]);
+
+			await worktreeCommand(["clean", "--force"]);
+			const out = output();
+
+			// Worktree should be removed
+			expect(existsSync(wtPath)).toBe(false);
+			expect(out).toContain("🗑️  Removed: overstory/unmerged-agent/task-force");
+		});
+
+		test("without --force, removes worktrees whose branches ARE merged", async () => {
+			const worktreesDir = join(tempDir, ".overstory", "worktrees");
+			await mkdir(worktreesDir, { recursive: true });
+
+			const { path: wtPath, branch } = await createWorktree({
+				repoRoot: tempDir,
+				baseDir: worktreesDir,
+				agentName: "merged-agent",
+				baseBranch: "main",
+				beadId: "task-merged",
+			});
+
+			// Add a commit and merge it into main
+			await commitFile(wtPath, "work.ts", "export const z = 3;", "work to merge");
+			await runGitInDir(tempDir, ["merge", "--no-ff", branch, "-m", "merge feature"]);
+
+			writeSessionsToStore([
+				makeSession({
+					id: "session-m",
+					agentName: "merged-agent",
+					worktreePath: wtPath,
+					branchName: branch,
+					beadId: "task-merged",
+					state: "completed",
+				}),
+			]);
+
+			await worktreeCommand(["clean"]);
+			const out = output();
+
+			// Merged worktree should be cleaned
+			expect(existsSync(wtPath)).toBe(false);
+			expect(out).toContain("Cleaned 1 worktree");
+		});
+
+		test("--json output includes skipped array for unmerged branches", async () => {
+			const worktreesDir = join(tempDir, ".overstory", "worktrees");
+			await mkdir(worktreesDir, { recursive: true });
+
+			const { path: wtPath } = await createWorktree({
+				repoRoot: tempDir,
+				baseDir: worktreesDir,
+				agentName: "unmerged-json-agent",
+				baseBranch: "main",
+				beadId: "task-json",
+			});
+
+			// Add an unmerged commit
+			await commitFile(wtPath, "work.ts", "export const w = 4;", "unmerged work");
+
+			writeSessionsToStore([
+				makeSession({
+					id: "session-j",
+					agentName: "unmerged-json-agent",
+					worktreePath: wtPath,
+					branchName: "overstory/unmerged-json-agent/task-json",
+					beadId: "task-json",
+					state: "completed",
+				}),
+			]);
+
+			await worktreeCommand(["clean", "--json"]);
+			const out = output();
+
+			const parsed = JSON.parse(out.trim()) as {
+				cleaned: string[];
+				failed: string[];
+				skipped: string[];
+				pruned: number;
+				mailPurged: number;
+			};
+
+			expect(parsed.cleaned).toEqual([]);
+			expect(parsed.skipped).toEqual(["overstory/unmerged-json-agent/task-json"]);
 		});
 	});
 });

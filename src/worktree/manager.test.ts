@@ -10,7 +10,7 @@ import {
 	createTempGitRepo,
 	getDefaultBranch,
 } from "../test-helpers.ts";
-import { createWorktree, listWorktrees, removeWorktree } from "./manager.ts";
+import { createWorktree, isBranchMerged, listWorktrees, removeWorktree } from "./manager.ts";
 
 /**
  * Run a git command in a directory and return stdout. Throws on non-zero exit.
@@ -241,6 +241,74 @@ describe("listWorktrees", () => {
 		} finally {
 			await cleanupTempDir(tmpDir);
 		}
+	});
+});
+
+describe("isBranchMerged", () => {
+	let repoDir: string;
+	let worktreesDir: string;
+	let defaultBranch: string;
+
+	beforeEach(async () => {
+		repoDir = realpathSync(await createTempGitRepo());
+		defaultBranch = await getDefaultBranch(repoDir);
+		worktreesDir = join(repoDir, ".overstory", "worktrees");
+		await mkdir(worktreesDir, { recursive: true });
+	});
+
+	afterEach(async () => {
+		await cleanupTempDir(repoDir);
+	});
+
+	test("returns true for a branch that has been merged via git merge", async () => {
+		const { path: wtPath, branch } = await createWorktree({
+			repoRoot: repoDir,
+			baseDir: worktreesDir,
+			agentName: "feature-agent",
+			baseBranch: defaultBranch,
+			beadId: "bead-merged",
+		});
+
+		// Add a commit to the feature branch
+		await commitFile(wtPath, "feature.ts", "export const x = 1;", "add feature");
+
+		// Merge the feature branch into defaultBranch
+		await git(repoDir, ["merge", "--no-ff", branch, "-m", "merge feature"]);
+
+		const merged = await isBranchMerged(repoDir, branch, defaultBranch);
+		expect(merged).toBe(true);
+	});
+
+	test("returns false for a branch with unmerged commits", async () => {
+		const { path: wtPath, branch } = await createWorktree({
+			repoRoot: repoDir,
+			baseDir: worktreesDir,
+			agentName: "feature-agent",
+			baseBranch: defaultBranch,
+			beadId: "bead-unmerged",
+		});
+
+		// Add a commit to the feature branch (not merged)
+		await commitFile(wtPath, "feature.ts", "export const x = 1;", "add feature");
+
+		const merged = await isBranchMerged(repoDir, branch, defaultBranch);
+		expect(merged).toBe(false);
+	});
+
+	test("returns true for an identical branch (same commit, no additional commits)", async () => {
+		// A freshly created worktree branch has the same HEAD as the base branch
+		const { branch } = await createWorktree({
+			repoRoot: repoDir,
+			baseDir: worktreesDir,
+			agentName: "feature-agent",
+			baseBranch: defaultBranch,
+			beadId: "bead-same",
+		});
+
+		// The branch was created from defaultBranch with no additional commits,
+		// so its tip is an ancestor of (equal to) defaultBranch
+		const merged = await isBranchMerged(repoDir, branch, defaultBranch);
+		expect(merged).toBe(true);
 	});
 });
 

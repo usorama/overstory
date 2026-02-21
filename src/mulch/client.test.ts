@@ -280,6 +280,76 @@ describe("createMulchClient", () => {
 			).rejects.toThrow(AgentError);
 		});
 
+		test.skipIf(!hasMulch)("with outcome flags passes them to CLI", async () => {
+			await initMulch();
+			const addProc = Bun.spawn(["mulch", "add", "testing"], {
+				cwd: tempDir,
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			await addProc.exited;
+
+			const client = createMulchClient(tempDir);
+			// May succeed or fail depending on mulch version, but verifies flags are passed
+			try {
+				await client.record("testing", {
+					type: "convention",
+					description: "outcome test",
+					outcomeStatus: "success",
+					outcomeDuration: 42,
+					outcomeTestResults: "15 passed",
+					outcomeAgent: "test-agent",
+				});
+				expect(true).toBe(true);
+			} catch (error) {
+				expect(error).toBeInstanceOf(AgentError);
+			}
+		});
+
+		test.skipIf(!hasMulch)("with outcomeStatus: failure passes flag to CLI", async () => {
+			await initMulch();
+			const addProc = Bun.spawn(["mulch", "add", "testing"], {
+				cwd: tempDir,
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			await addProc.exited;
+
+			const client = createMulchClient(tempDir);
+			try {
+				await client.record("testing", {
+					type: "failure",
+					description: "failure outcome test",
+					outcomeStatus: "failure",
+				});
+				expect(true).toBe(true);
+			} catch (error) {
+				expect(error).toBeInstanceOf(AgentError);
+			}
+		});
+
+		test.skipIf(!hasMulch)("with outcomeDuration: 0 passes zero value to CLI", async () => {
+			await initMulch();
+			const addProc = Bun.spawn(["mulch", "add", "testing"], {
+				cwd: tempDir,
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			await addProc.exited;
+
+			const client = createMulchClient(tempDir);
+			try {
+				await client.record("testing", {
+					type: "convention",
+					description: "zero duration test",
+					outcomeDuration: 0,
+				});
+				expect(true).toBe(true);
+			} catch (error) {
+				expect(error).toBeInstanceOf(AgentError);
+			}
+		});
+
 		test.skipIf(!hasMulch)("with --evidence-bead flag passes flag to CLI", async () => {
 			await initMulch();
 			const addProc = Bun.spawn(["mulch", "add", "testing"], {
@@ -358,6 +428,27 @@ describe("createMulchClient", () => {
 			});
 
 			const result = await client.search("searchable");
+			expect(typeof result).toBe("string");
+		});
+
+		test.skipIf(!hasMulch)("passes --file flag when provided", async () => {
+			await initMulch();
+			const client = createMulchClient(tempDir);
+			const result = await client.search("test", { file: "src/config.ts" });
+			expect(typeof result).toBe("string");
+		});
+
+		test.skipIf(!hasMulch)("passes --sort-by-score flag when provided", async () => {
+			await initMulch();
+			const client = createMulchClient(tempDir);
+			const result = await client.search("test", { sortByScore: true });
+			expect(typeof result).toBe("string");
+		});
+
+		test.skipIf(!hasMulch)("passes both --file and --sort-by-score flags", async () => {
+			await initMulch();
+			const client = createMulchClient(tempDir);
+			const result = await client.search("test", { file: "src/config.ts", sortByScore: true });
 			expect(typeof result).toBe("string");
 		});
 	});

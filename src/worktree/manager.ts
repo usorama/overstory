@@ -130,6 +130,32 @@ export async function listWorktrees(
 }
 
 /**
+ * Check if a branch has been merged into a target branch.
+ * Uses `git merge-base --is-ancestor` which returns exit 0 if merged, 1 if not.
+ */
+export async function isBranchMerged(
+	repoRoot: string,
+	branch: string,
+	targetBranch: string,
+): Promise<boolean> {
+	const proc = Bun.spawn(["git", "merge-base", "--is-ancestor", branch, targetBranch], {
+		cwd: repoRoot,
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+
+	const [stderr, exitCode] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
+
+	if (exitCode === 0) return true;
+	if (exitCode === 1) return false;
+
+	throw new WorktreeError(
+		`git merge-base --is-ancestor failed (exit ${exitCode}): ${stderr.trim()}`,
+		{ branchName: branch },
+	);
+}
+
+/**
  * Remove a git worktree and delete its associated branch.
  *
  * Runs `git worktree remove {path}` to remove the worktree, then

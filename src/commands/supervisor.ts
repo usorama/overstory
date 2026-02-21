@@ -22,7 +22,14 @@ import { loadConfig } from "../config.ts";
 import { AgentError, ValidationError } from "../errors.ts";
 import { openSessionStore } from "../sessions/compat.ts";
 import type { AgentSession } from "../types.ts";
-import { createSession, isSessionAlive, killSession, sendKeys } from "../worktree/tmux.ts";
+import {
+	createSession,
+	isSessionAlive,
+	killSession,
+	sendKeys,
+	waitForTuiReady,
+} from "../worktree/tmux.ts";
+import { isRunningAsRoot } from "./sling.ts";
 
 /**
  * Build the supervisor startup beacon.
@@ -128,6 +135,12 @@ async function startSupervisor(args: string[]): Promise<void> {
 		});
 	}
 
+	if (isRunningAsRoot()) {
+		throw new AgentError(
+			"Cannot spawn agents as root (UID 0). The claude CLI rejects --dangerously-skip-permissions when run as root, causing the tmux session to die immediately. Run overstory as a non-root user.",
+		);
+	}
+
 	const cwd = process.cwd();
 	const config = await loadConfig(cwd);
 	const projectRoot = config.project.root;
@@ -189,7 +202,7 @@ async function startSupervisor(args: string[]): Promise<void> {
 			join(projectRoot, config.agents.baseDir),
 		);
 		const manifest = await manifestLoader.load();
-		const model = resolveModel(config, manifest, "supervisor", "opus");
+		const { model, env } = resolveModel(config, manifest, "supervisor", "opus");
 
 		// Spawn tmux session at project root with Claude Code (interactive mode).
 		// Inject the supervisor base definition via --append-system-prompt.
@@ -203,11 +216,14 @@ async function startSupervisor(args: string[]): Promise<void> {
 			claudeCmd += ` --append-system-prompt '${escaped}'`;
 		}
 		const pid = await createSession(tmuxSession, projectRoot, claudeCmd, {
+			...env,
 			OVERSTORY_AGENT_NAME: flags.name,
 		});
 
-		// Send beacon after TUI initialization delay
-		await Bun.sleep(3_000);
+		// Wait for Claude Code TUI to render before sending input
+		await waitForTuiReady(tmuxSession);
+		await Bun.sleep(1_000);
+
 		const beacon = buildSupervisorBeacon({
 			name: flags.name,
 			beadId: flags.task,
@@ -216,9 +232,11 @@ async function startSupervisor(args: string[]): Promise<void> {
 		});
 		await sendKeys(tmuxSession, beacon);
 
-		// Follow-up Enter to ensure submission
-		await Bun.sleep(500);
-		await sendKeys(tmuxSession, "");
+		// Follow-up Enters with increasing delays to ensure submission
+		for (const delay of [1_000, 2_000]) {
+			await Bun.sleep(delay);
+			await sendKeys(tmuxSession, "");
+		}
 
 		// Record session
 		const session: AgentSession = {

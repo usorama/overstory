@@ -1,9 +1,18 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createSessionStore } from "../sessions/store.ts";
+import { createTempGitRepo } from "../test-helpers.ts";
 import type { AgentSession } from "../types.ts";
-import { printStatus, type StatusData, statusCommand, type VerboseAgentDetail } from "./status.ts";
+import {
+	gatherStatus,
+	invalidateStatusCache,
+	printStatus,
+	type StatusData,
+	statusCommand,
+	type VerboseAgentDetail,
+} from "./status.ts";
 
 /**
  * Tests for the --verbose flag in overstory status.
@@ -224,6 +233,120 @@ describe("--verbose --json", () => {
 	});
 });
 
+describe("run scoping", () => {
+	let chunks: string[];
+	let originalWrite: typeof process.stdout.write;
+
+	beforeEach(() => {
+		chunks = [];
+		originalWrite = process.stdout.write;
+		process.stdout.write = ((chunk: string) => {
+			chunks.push(chunk);
+			return true;
+		}) as typeof process.stdout.write;
+	});
+
+	afterEach(() => {
+		process.stdout.write = originalWrite;
+		invalidateStatusCache();
+	});
+
+	function output(): string {
+		return chunks.join("");
+	}
+
+	test("printStatus shows run ID when currentRunId is set", () => {
+		const data = makeStatusData({ currentRunId: "run-123" });
+		printStatus(data);
+		expect(output()).toContain("Run: run-123");
+	});
+
+	test("printStatus does not show run line when currentRunId is undefined", () => {
+		const data = makeStatusData();
+		printStatus(data);
+		expect(output()).not.toContain("Run:");
+	});
+
+	test("printStatus does not show run line when currentRunId is null", () => {
+		const data = makeStatusData({ currentRunId: null });
+		printStatus(data);
+		expect(output()).not.toContain("Run:");
+	});
+
+	test("help text includes --all", async () => {
+		const helpChunks: string[] = [];
+		const origWrite = process.stdout.write;
+		process.stdout.write = ((chunk: string) => {
+			helpChunks.push(chunk);
+			return true;
+		}) as typeof process.stdout.write;
+
+		try {
+			await statusCommand(["--help"]);
+		} finally {
+			process.stdout.write = origWrite;
+		}
+
+		const out = helpChunks.join("");
+		expect(out).toContain("--all");
+	});
+
+	test("gatherStatus includes null-runId sessions when run-scoped", async () => {
+		// Use a real git repo so listWorktrees() doesn't throw
+		const tempDir = await createTempGitRepo();
+		const overstoryDir = join(tempDir, ".overstory");
+		await mkdir(overstoryDir, { recursive: true });
+
+		// Seed sessions.db with three sessions:
+		//   coordinator: runId=null
+		//   builder-1:   runId="run-001" (in-scope)
+		//   builder-2:   runId="run-002" (out-of-scope)
+		const store = createSessionStore(join(overstoryDir, "sessions.db"));
+		const now = new Date().toISOString();
+		for (const session of [
+			makeAgent({
+				agentName: "coordinator",
+				capability: "coordinator",
+				runId: null,
+				tmuxSession: "overstory-fake-coordinator",
+			}),
+			makeAgent({
+				id: "sess-002",
+				agentName: "builder-1",
+				capability: "builder",
+				runId: "run-001",
+				tmuxSession: "overstory-fake-builder-1",
+			}),
+			makeAgent({
+				id: "sess-003",
+				agentName: "builder-2",
+				capability: "builder",
+				runId: "run-002",
+				tmuxSession: "overstory-fake-builder-2",
+			}),
+		] as AgentSession[]) {
+			session.startedAt = now;
+			session.lastActivity = now;
+			store.upsert(session);
+		}
+		store.close();
+
+		try {
+			const result = await gatherStatus(tempDir, "orchestrator", false, "run-001");
+			const names = result.agents.map((a) => a.agentName);
+
+			// coordinator (null runId) must appear
+			expect(names).toContain("coordinator");
+			// in-scope builder must appear
+			expect(names).toContain("builder-1");
+			// out-of-scope builder must NOT appear
+			expect(names).not.toContain("builder-2");
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
+	});
+});
+
 describe("--watch deprecation", () => {
 	test("help text marks --watch as deprecated", async () => {
 		const chunks: string[] = [];
@@ -272,5 +395,36 @@ describe("--watch deprecation", () => {
 		const err = stderrChunks.join("");
 		expect(err).toContain("--watch is deprecated");
 		expect(err).toContain("overstory dashboard");
+	});
+});
+
+describe("subprocess caching (invalidateStatusCache)", () => {
+	afterEach(() => {
+		invalidateStatusCache();
+	});
+
+	test("invalidateStatusCache is exported and callable", () => {
+		// Should not throw
+		invalidateStatusCache();
+	});
+
+	test("invalidateStatusCache resets cache so gatherStatus re-fetches on next call", async () => {
+		const tempDir = await createTempGitRepo();
+		const overstoryDir = join(tempDir, ".overstory");
+		await mkdir(overstoryDir, { recursive: true });
+
+		try {
+			// First call populates the cache
+			const result1 = await gatherStatus(tempDir, "orchestrator", false, undefined);
+			// Invalidate cache
+			invalidateStatusCache();
+			// Second call must succeed (re-fetches, no stale cache issues)
+			const result2 = await gatherStatus(tempDir, "orchestrator", false, undefined);
+			// Both results should have the same structure
+			expect(Array.isArray(result1.worktrees)).toBe(true);
+			expect(Array.isArray(result2.worktrees)).toBe(true);
+		} finally {
+			await rm(tempDir, { recursive: true, force: true });
+		}
 	});
 });

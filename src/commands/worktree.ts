@@ -12,7 +12,7 @@ import { ValidationError } from "../errors.ts";
 import { createMailStore } from "../mail/store.ts";
 import { openSessionStore } from "../sessions/compat.ts";
 import type { AgentSession } from "../types.ts";
-import { listWorktrees, removeWorktree } from "../worktree/manager.ts";
+import { isBranchMerged, listWorktrees, removeWorktree } from "../worktree/manager.ts";
 import { isSessionAlive, killSession } from "../worktree/tmux.ts";
 
 function hasFlag(args: string[], flag: string): boolean {
@@ -69,10 +69,16 @@ async function handleList(root: string, json: boolean): Promise<void> {
 }
 
 /**
- * Handle `overstory worktree clean [--completed] [--all]`.
+ * Handle `overstory worktree clean [--completed] [--all] [--force]`.
  */
-async function handleClean(args: string[], root: string, json: boolean): Promise<void> {
+async function handleClean(
+	args: string[],
+	root: string,
+	json: boolean,
+	canonicalBranch: string,
+): Promise<void> {
 	const all = hasFlag(args, "--all");
+	const force = hasFlag(args, "--force");
 	const completedOnly = hasFlag(args, "--completed") || !all;
 
 	const worktrees = await listWorktrees(root);
@@ -90,6 +96,7 @@ async function handleClean(args: string[], root: string, json: boolean): Promise
 	const overstoryWts = worktrees.filter((wt) => wt.branch.startsWith("overstory/"));
 	const cleaned: string[] = [];
 	const failed: string[] = [];
+	const skipped: string[] = [];
 
 	try {
 		for (const wt of overstoryWts) {
@@ -98,6 +105,22 @@ async function handleClean(args: string[], root: string, json: boolean): Promise
 			// If --completed (default), only clean worktrees whose agent is done/zombie
 			if (completedOnly && session && session.state !== "completed" && session.state !== "zombie") {
 				continue;
+			}
+
+			// Check if the branch has been merged into the canonical branch (unless --force)
+			if (!force && wt.branch.length > 0) {
+				let merged = false;
+				try {
+					merged = await isBranchMerged(root, wt.branch, canonicalBranch);
+				} catch {
+					// If we can't determine merge status, treat as unmerged (safe default)
+					merged = false;
+				}
+
+				if (!merged) {
+					skipped.push(wt.branch);
+					continue;
+				}
 			}
 
 			// If --all, clean everything
@@ -110,6 +133,19 @@ async function handleClean(args: string[], root: string, json: boolean): Promise
 					} catch {
 						// Best effort
 					}
+				}
+			}
+
+			// Warn about force-deleting unmerged branch
+			if (force && wt.branch.length > 0) {
+				let merged = false;
+				try {
+					merged = await isBranchMerged(root, wt.branch, canonicalBranch);
+				} catch {
+					merged = false;
+				}
+				if (!merged && !json) {
+					process.stdout.write(`⚠️  Force-deleting unmerged branch: ${wt.branch}\n`);
 				}
 			}
 
@@ -179,9 +215,14 @@ async function handleClean(args: string[], root: string, json: boolean): Promise
 
 		if (json) {
 			process.stdout.write(
-				`${JSON.stringify({ cleaned, failed, pruned: pruneCount, mailPurged })}\n`,
+				`${JSON.stringify({ cleaned, failed, skipped, pruned: pruneCount, mailPurged })}\n`,
 			);
-		} else if (cleaned.length === 0 && pruneCount === 0 && failed.length === 0) {
+		} else if (
+			cleaned.length === 0 &&
+			pruneCount === 0 &&
+			failed.length === 0 &&
+			skipped.length === 0
+		) {
 			process.stdout.write("No worktrees to clean.\n");
 		} else {
 			if (cleaned.length > 0) {
@@ -204,6 +245,15 @@ async function handleClean(args: string[], root: string, json: boolean): Promise
 					`Pruned ${pruneCount} zombie session${pruneCount === 1 ? "" : "s"} from store.\n`,
 				);
 			}
+			if (skipped.length > 0) {
+				process.stdout.write(
+					`\n⚠️  Skipped ${skipped.length} worktree${skipped.length === 1 ? "" : "s"} with unmerged branches:\n`,
+				);
+				for (const branch of skipped) {
+					process.stdout.write(`  ${branch}\n`);
+				}
+				process.stdout.write("Use --force to delete unmerged branches.\n");
+			}
 		}
 	} finally {
 		store.close();
@@ -224,6 +274,7 @@ Subcommands:
   clean              Remove completed worktrees
                        [--completed]  Only finished agents (default)
                        [--all]        Force remove all
+                       [--force]      Delete even if branches are unmerged
 
 Options:
   --json             Output as JSON
@@ -242,13 +293,14 @@ export async function worktreeCommand(args: string[]): Promise<void> {
 	const cwd = process.cwd();
 	const config = await loadConfig(cwd);
 	const root = config.project.root;
+	const canonicalBranch = config.project.canonicalBranch;
 
 	switch (subcommand) {
 		case "list":
 			await handleList(root, jsonFlag);
 			break;
 		case "clean":
-			await handleClean(subArgs, root, jsonFlag);
+			await handleClean(subArgs, root, jsonFlag, canonicalBranch);
 			break;
 		default:
 			throw new ValidationError(

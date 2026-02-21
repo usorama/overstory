@@ -218,6 +218,53 @@ watchdog:
 		expect(config.watchdog.staleThresholdMs).toBe(120000);
 	});
 
+	test("parses providers section from config.yaml", async () => {
+		await ensureOverstoryDir();
+		await writeConfig(`
+providers:
+  openrouter:
+    type: gateway
+    baseUrl: https://openrouter.ai/api/v1
+    authTokenEnv: OPENROUTER_API_KEY
+`);
+		const config = await loadConfig(tempDir);
+		expect(config.providers.openrouter).toEqual({
+			type: "gateway",
+			baseUrl: "https://openrouter.ai/api/v1",
+			authTokenEnv: "OPENROUTER_API_KEY",
+		});
+		// Default anthropic provider preserved via deep merge
+		expect(config.providers.anthropic).toEqual({ type: "native" });
+	});
+
+	test("config.local.yaml overrides provider settings", async () => {
+		await ensureOverstoryDir();
+		await writeConfig(`
+providers:
+  anthropic:
+    type: native
+`);
+		await Bun.write(
+			join(tempDir, ".overstory", "config.local.yaml"),
+			`providers:\n  anthropic:\n    type: gateway\n    baseUrl: http://localhost:8080\n    authTokenEnv: ANTHROPIC_GATEWAY_KEY\n`,
+		);
+		const config = await loadConfig(tempDir);
+		expect(config.providers.anthropic).toEqual({
+			type: "gateway",
+			baseUrl: "http://localhost:8080",
+			authTokenEnv: "ANTHROPIC_GATEWAY_KEY",
+		});
+	});
+
+	test("empty providers section preserves defaults", async () => {
+		await ensureOverstoryDir();
+		await writeConfig(`
+providers:
+`);
+		const config = await loadConfig(tempDir);
+		expect(config.providers.anthropic).toEqual({ type: "native" });
+	});
+
 	test("migrates deprecated watchdog tier1/tier2 keys to tier0/tier1", async () => {
 		await ensureOverstoryDir();
 		await writeConfig(`
@@ -355,6 +402,130 @@ models:
 `);
 		await expect(loadConfig(tempDir)).rejects.toThrow(ValidationError);
 	});
+
+	// Provider validation tests
+
+	test("rejects provider with invalid type", async () => {
+		await writeConfig(`
+providers:
+  custom:
+    type: custom
+`);
+		await expect(loadConfig(tempDir)).rejects.toThrow(ValidationError);
+	});
+
+	test("rejects gateway provider without baseUrl", async () => {
+		await writeConfig(`
+providers:
+  mygateway:
+    type: gateway
+    authTokenEnv: MY_TOKEN
+`);
+		await expect(loadConfig(tempDir)).rejects.toThrow(ValidationError);
+	});
+
+	test("rejects gateway provider without authTokenEnv", async () => {
+		await writeConfig(`
+providers:
+  mygateway:
+    type: gateway
+    baseUrl: https://example.com
+`);
+		await expect(loadConfig(tempDir)).rejects.toThrow(ValidationError);
+	});
+
+	test("accepts native provider without baseUrl or authTokenEnv", async () => {
+		await writeConfig(`
+providers:
+  mylocal:
+    type: native
+`);
+		const config = await loadConfig(tempDir);
+		expect(config.providers.mylocal).toEqual({ type: "native" });
+	});
+
+	// Model validation tests
+
+	test("accepts provider-prefixed model ref when provider exists", async () => {
+		await writeConfig(`
+providers:
+  openrouter:
+    type: gateway
+    baseUrl: https://openrouter.ai/api/v1
+    authTokenEnv: OPENROUTER_API_KEY
+models:
+  coordinator: openrouter/openai/gpt-5.3
+`);
+		const config = await loadConfig(tempDir);
+		expect(config.models.coordinator).toBe("openrouter/openai/gpt-5.3");
+	});
+
+	test("rejects provider-prefixed model ref when provider is unknown", async () => {
+		await writeConfig(`
+models:
+  coordinator: unknown/model
+`);
+		await expect(loadConfig(tempDir)).rejects.toThrow(ValidationError);
+	});
+
+	test("rejects bare invalid model name", async () => {
+		await writeConfig(`
+models:
+  coordinator: gpt4
+`);
+		const err = await loadConfig(tempDir).catch((e: unknown) => e);
+		expect(err).toBeInstanceOf(ValidationError);
+		expect((err as ValidationError).message).toContain("provider-prefixed ref");
+	});
+
+	test("warns on non-Anthropic model in tool-heavy role", async () => {
+		await writeConfig(`
+providers:
+  openrouter:
+    type: gateway
+    baseUrl: https://openrouter.ai/api/v1
+    authTokenEnv: OPENROUTER_API_KEY
+models:
+  builder: openrouter/openai/gpt-4
+`);
+		const origWrite = process.stderr.write;
+		let capturedStderr = "";
+		process.stderr.write = ((s: string | Uint8Array) => {
+			if (typeof s === "string") capturedStderr += s;
+			return true;
+		}) as typeof process.stderr.write;
+		try {
+			await loadConfig(tempDir);
+		} finally {
+			process.stderr.write = origWrite;
+		}
+		expect(capturedStderr).toContain("WARNING: models.builder uses non-Anthropic model");
+		expect(capturedStderr).toContain("openrouter/openai/gpt-4");
+	});
+
+	test("does not warn for non-Anthropic model in non-tool-heavy role", async () => {
+		await writeConfig(`
+providers:
+  openrouter:
+    type: gateway
+    baseUrl: https://openrouter.ai/api/v1
+    authTokenEnv: OPENROUTER_API_KEY
+models:
+  coordinator: openrouter/openai/gpt-4
+`);
+		const origWrite = process.stderr.write;
+		let capturedStderr = "";
+		process.stderr.write = ((s: string | Uint8Array) => {
+			if (typeof s === "string") capturedStderr += s;
+			return true;
+		}) as typeof process.stderr.write;
+		try {
+			await loadConfig(tempDir);
+		} finally {
+			process.stderr.write = origWrite;
+		}
+		expect(capturedStderr).not.toContain("WARNING");
+	});
 });
 
 describe("resolveProjectRoot", () => {
@@ -470,9 +641,15 @@ describe("DEFAULT_CONFIG", () => {
 		expect(DEFAULT_CONFIG.beads).toBeDefined();
 		expect(DEFAULT_CONFIG.mulch).toBeDefined();
 		expect(DEFAULT_CONFIG.merge).toBeDefined();
+		expect(DEFAULT_CONFIG.providers).toBeDefined();
 		expect(DEFAULT_CONFIG.watchdog).toBeDefined();
 		expect(DEFAULT_CONFIG.models).toBeDefined();
 		expect(DEFAULT_CONFIG.logging).toBeDefined();
+	});
+
+	test("has default providers with anthropic native", () => {
+		expect(DEFAULT_CONFIG.providers).toBeDefined();
+		expect(DEFAULT_CONFIG.providers.anthropic).toEqual({ type: "native" });
 	});
 
 	test("has sensible default values", () => {

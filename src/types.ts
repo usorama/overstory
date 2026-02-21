@@ -1,3 +1,27 @@
+// === Model & Provider Types ===
+
+/** Backward-compatible model alias for Anthropic models. */
+export type ModelAlias = "sonnet" | "opus" | "haiku";
+
+/**
+ * A model reference: either a simple alias ('sonnet') or a provider-qualified
+ * string ('provider/model', e.g. 'openrouter/openai/gpt-5.3').
+ */
+export type ModelRef = ModelAlias | (string & {});
+
+/** Configuration for a model provider. */
+export interface ProviderConfig {
+	type: "native" | "gateway";
+	baseUrl?: string;
+	authTokenEnv?: string;
+}
+
+/** Resolved model with optional provider environment variables. */
+export interface ResolvedModel {
+	model: string;
+	env?: Record<string, string>;
+}
+
 // === Project Configuration ===
 
 export interface OverstoryConfig {
@@ -28,16 +52,17 @@ export interface OverstoryConfig {
 		aiResolveEnabled: boolean;
 		reimagineEnabled: boolean;
 	};
+	providers: Record<string, ProviderConfig>;
 	watchdog: {
 		tier0Enabled: boolean; // Tier 0: Mechanical daemon (heartbeat, tmux/pid liveness)
 		tier0IntervalMs: number; // Default 30_000
 		tier1Enabled: boolean; // Tier 1: Triage agent (ephemeral AI analysis)
-		tier2Enabled: boolean; // Tier 2: Monitor agent (continuous patrol — not yet implemented)
+		tier2Enabled: boolean; // Tier 2: Monitor agent (continuous patrol)
 		staleThresholdMs: number; // When to consider agent stale
 		zombieThresholdMs: number; // When to kill
 		nudgeIntervalMs: number; // Time between progressive nudge stages (default 60_000)
 	};
-	models: Partial<Record<string, "sonnet" | "opus" | "haiku">>;
+	models: Partial<Record<string, ModelRef>>;
 	logging: {
 		verbose: boolean;
 		redactSecrets: boolean;
@@ -54,7 +79,7 @@ export interface AgentManifest {
 
 export interface AgentDefinition {
 	file: string; // Path to base agent definition (.md)
-	model: "sonnet" | "opus" | "haiku";
+	model: ModelRef;
 	tools: string[]; // Allowed tools
 	capabilities: string[]; // What this agent can do
 	canSpawn: boolean; // Can this agent spawn sub-workers?
@@ -341,6 +366,7 @@ export interface SessionMetrics {
 	cacheCreationTokens: number;
 	estimatedCostUsd: number | null;
 	modelUsed: string | null;
+	runId: string | null;
 }
 
 /** A point-in-time token usage snapshot for a running agent session. */

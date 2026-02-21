@@ -7,11 +7,20 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ValidationError } from "../errors.ts";
-import { dashboardCommand } from "./dashboard.ts";
+import { createSessionStore } from "../sessions/store.ts";
+import {
+	closeDashboardStores,
+	dashboardCommand,
+	filterAgentsByRun,
+	horizontalLine,
+	openDashboardStores,
+	pad,
+	truncate,
+} from "./dashboard.ts";
 
 describe("dashboardCommand", () => {
 	let chunks: string[];
@@ -90,5 +99,210 @@ describe("dashboardCommand", () => {
 		}
 
 		// If we reach here without throwing a ValidationError about interval, validation passed
+	});
+
+	test("help text includes --all flag", async () => {
+		await dashboardCommand(["--help"]);
+		const out = output();
+
+		expect(out).toContain("--all");
+	});
+
+	test("help text describes current run scoping", async () => {
+		await dashboardCommand(["--help"]);
+		const out = output();
+
+		expect(out).toContain("current run");
+	});
+});
+
+describe("pad", () => {
+	test("zero width returns empty string", () => {
+		expect(pad("hello", 0)).toBe("");
+	});
+
+	test("negative width returns empty string", () => {
+		expect(pad("hello", -1)).toBe("");
+	});
+
+	test("truncates string longer than width", () => {
+		expect(pad("hello", 3)).toBe("hel");
+	});
+
+	test("pads string shorter than width with spaces", () => {
+		expect(pad("hi", 5)).toBe("hi   ");
+	});
+});
+
+describe("truncate", () => {
+	test("zero maxLen returns empty string", () => {
+		expect(truncate("hello world", 0)).toBe("");
+	});
+
+	test("negative maxLen returns empty string", () => {
+		expect(truncate("hello world", -1)).toBe("");
+	});
+
+	test("truncates with ellipsis", () => {
+		expect(truncate("hello world", 5)).toBe("hell…");
+	});
+
+	test("string shorter than maxLen returned as-is", () => {
+		expect(truncate("hi", 10)).toBe("hi");
+	});
+});
+
+describe("horizontalLine", () => {
+	test("width 0 does not throw", () => {
+		expect(() => horizontalLine(0, "┌", "─", "┐")).not.toThrow();
+	});
+
+	test("width 1 does not throw", () => {
+		expect(() => horizontalLine(1, "┌", "─", "┐")).not.toThrow();
+	});
+
+	test("width 2 returns just connectors", () => {
+		expect(horizontalLine(2, "┌", "─", "┐")).toBe("┌┐");
+	});
+
+	test("width 4 returns connectors with fill", () => {
+		expect(horizontalLine(4, "┌", "─", "┐")).toBe("┌──┐");
+	});
+});
+
+describe("filterAgentsByRun", () => {
+	type Stub = { runId: string | null; name: string };
+
+	const coordinator: Stub = { runId: null, name: "coordinator" };
+	const builder1: Stub = { runId: "run-001", name: "builder-1" };
+	const builder2: Stub = { runId: "run-002", name: "builder-2" };
+	const agents = [coordinator, builder1, builder2];
+
+	test("no runId returns all agents", () => {
+		expect(filterAgentsByRun(agents, null)).toEqual(agents);
+		expect(filterAgentsByRun(agents, undefined)).toEqual(agents);
+	});
+
+	test("run-scoped includes matching runId agents", () => {
+		const result = filterAgentsByRun(agents, "run-001");
+		expect(result.map((a) => a.name)).toContain("builder-1");
+	});
+
+	test("run-scoped includes null-runId agents (coordinator)", () => {
+		const result = filterAgentsByRun(agents, "run-001");
+		expect(result.map((a) => a.name)).toContain("coordinator");
+	});
+
+	test("run-scoped excludes agents from other runs", () => {
+		const result = filterAgentsByRun(agents, "run-001");
+		expect(result.map((a) => a.name)).not.toContain("builder-2");
+	});
+
+	test("empty agents list returns empty", () => {
+		expect(filterAgentsByRun([], "run-001")).toEqual([]);
+	});
+});
+
+describe("openDashboardStores", () => {
+	let tempDir: string;
+
+	beforeEach(async () => {
+		tempDir = await mkdtemp(join(tmpdir(), "dashboard-stores-test-"));
+	});
+
+	afterEach(async () => {
+		await rm(tempDir, { recursive: true, force: true });
+	});
+
+	test("sessionStore is non-null when .overstory/ has sessions.db", async () => {
+		// Create the .overstory directory and seed a sessions.db via createSessionStore
+		const overstoryDir = join(tempDir, ".overstory");
+		await mkdir(overstoryDir, { recursive: true });
+		// createSessionStore creates and initialises sessions.db
+		const seeder = createSessionStore(join(overstoryDir, "sessions.db"));
+		seeder.close();
+
+		const stores = openDashboardStores(tempDir);
+		try {
+			expect(stores.sessionStore).not.toBeNull();
+		} finally {
+			closeDashboardStores(stores);
+		}
+	});
+
+	test("mailStore is null when mail.db does not exist", async () => {
+		const overstoryDir = join(tempDir, ".overstory");
+		await mkdir(overstoryDir, { recursive: true });
+		const seeder = createSessionStore(join(overstoryDir, "sessions.db"));
+		seeder.close();
+
+		const stores = openDashboardStores(tempDir);
+		try {
+			expect(stores.mailStore).toBeNull();
+		} finally {
+			closeDashboardStores(stores);
+		}
+	});
+
+	test("mergeQueue is null when merge-queue.db does not exist", async () => {
+		const overstoryDir = join(tempDir, ".overstory");
+		await mkdir(overstoryDir, { recursive: true });
+		const seeder = createSessionStore(join(overstoryDir, "sessions.db"));
+		seeder.close();
+
+		const stores = openDashboardStores(tempDir);
+		try {
+			expect(stores.mergeQueue).toBeNull();
+		} finally {
+			closeDashboardStores(stores);
+		}
+	});
+
+	test("metricsStore is null when metrics.db does not exist", async () => {
+		const overstoryDir = join(tempDir, ".overstory");
+		await mkdir(overstoryDir, { recursive: true });
+		const seeder = createSessionStore(join(overstoryDir, "sessions.db"));
+		seeder.close();
+
+		const stores = openDashboardStores(tempDir);
+		try {
+			expect(stores.metricsStore).toBeNull();
+		} finally {
+			closeDashboardStores(stores);
+		}
+	});
+});
+
+describe("closeDashboardStores", () => {
+	let tempDir: string;
+
+	beforeEach(async () => {
+		tempDir = await mkdtemp(join(tmpdir(), "dashboard-close-test-"));
+	});
+
+	afterEach(async () => {
+		await rm(tempDir, { recursive: true, force: true });
+	});
+
+	test("closing stores does not throw", async () => {
+		const overstoryDir = join(tempDir, ".overstory");
+		await mkdir(overstoryDir, { recursive: true });
+		const seeder = createSessionStore(join(overstoryDir, "sessions.db"));
+		seeder.close();
+
+		const stores = openDashboardStores(tempDir);
+		expect(() => closeDashboardStores(stores)).not.toThrow();
+	});
+
+	test("closing already-closed stores does not throw (best-effort)", async () => {
+		const overstoryDir = join(tempDir, ".overstory");
+		await mkdir(overstoryDir, { recursive: true });
+		const seeder = createSessionStore(join(overstoryDir, "sessions.db"));
+		seeder.close();
+
+		const stores = openDashboardStores(tempDir);
+		closeDashboardStores(stores);
+		// Second close should not throw due to best-effort try/catch
+		expect(() => closeDashboardStores(stores)).not.toThrow();
 	});
 });

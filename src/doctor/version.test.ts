@@ -31,6 +31,9 @@ const mockConfig: OverstoryConfig = {
 		aiResolveEnabled: false,
 		reimagineEnabled: false,
 	},
+	providers: {
+		anthropic: { type: "native" },
+	},
 	watchdog: {
 		tier0Enabled: false,
 		tier0IntervalMs: 30000,

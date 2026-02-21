@@ -75,7 +75,7 @@ function updateLastActivity(projectRoot: string, agentName: string): void {
 			const session = store.getByName(agentName);
 			if (session) {
 				store.updateLastActivity(agentName);
-				if (session.state === "booting") {
+				if (session.state === "booting" || session.state === "zombie") {
 					store.updateState(agentName, "working");
 				}
 			}
@@ -656,6 +656,7 @@ export async function logCommand(args: string[]): Promise<void> {
 							cacheCreationTokens,
 							estimatedCostUsd,
 							modelUsed,
+							runId: agentSession.runId,
 						});
 						metricsStore.close();
 					} catch {

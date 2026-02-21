@@ -142,6 +142,7 @@ describe("--all", () => {
 			cacheCreationTokens: 0,
 			estimatedCostUsd: null,
 			modelUsed: null,
+			runId: null,
 		});
 		store.close();
 

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { AgentError } from "../errors.ts";
 import {
+	capturePaneContent,
 	createSession,
 	getDescendantPids,
 	getPanePid,
@@ -10,6 +11,7 @@ import {
 	killSession,
 	listSessions,
 	sendKeys,
+	waitForTuiReady,
 } from "./tmux.ts";
 
 /**
@@ -852,5 +854,156 @@ describe("sendKeys", () => {
 		const callArgs = spawnSpy.mock.calls[0] as unknown[];
 		const cmd = callArgs[0] as string[];
 		expect(cmd).toEqual(["tmux", "send-keys", "-t", "overstory-agent", "", "Enter"]);
+	});
+
+	test("throws descriptive error when tmux server is not running", async () => {
+		spawnSpy.mockImplementation(() =>
+			mockSpawnResult("", "no server running on /tmp/tmux-0/default\n", 1),
+		);
+		await expect(sendKeys("overstory-agent-fake", "hello")).rejects.toThrow(
+			/Tmux server is not running/,
+		);
+	});
+
+	test("throws descriptive error when session not found", async () => {
+		spawnSpy.mockImplementation(() =>
+			mockSpawnResult("", "cant find session: overstory-agent-fake\n", 1),
+		);
+		await expect(sendKeys("overstory-agent-fake", "hello")).rejects.toThrow(/does not exist/);
+	});
+
+	test("throws generic error for other failures", async () => {
+		spawnSpy.mockImplementation(() => mockSpawnResult("", "some other error\n", 1));
+		await expect(sendKeys("overstory-agent-fake", "hello")).rejects.toThrow(/Failed to send keys/);
+	});
+});
+
+describe("capturePaneContent", () => {
+	let spawnSpy: ReturnType<typeof spyOn>;
+
+	beforeEach(() => {
+		spawnSpy = spyOn(Bun, "spawn");
+	});
+
+	afterEach(() => {
+		spawnSpy.mockRestore();
+	});
+
+	test("returns trimmed content on success", async () => {
+		spawnSpy.mockImplementation(() => mockSpawnResult("  Welcome to Claude Code!  \n\n", "", 0));
+
+		const content = await capturePaneContent("overstory-agent");
+
+		expect(content).toBe("Welcome to Claude Code!");
+	});
+
+	test("passes correct args to tmux capture-pane", async () => {
+		spawnSpy.mockImplementation(() => mockSpawnResult("some content", "", 0));
+
+		await capturePaneContent("my-session", 100);
+
+		const callArgs = spawnSpy.mock.calls[0] as unknown[];
+		const cmd = callArgs[0] as string[];
+		expect(cmd).toEqual(["tmux", "capture-pane", "-t", "my-session", "-p", "-S", "-100"]);
+	});
+
+	test("uses default 50 lines when not specified", async () => {
+		spawnSpy.mockImplementation(() => mockSpawnResult("content", "", 0));
+
+		await capturePaneContent("my-session");
+
+		const callArgs = spawnSpy.mock.calls[0] as unknown[];
+		const cmd = callArgs[0] as string[];
+		expect(cmd[6]).toBe("-50");
+	});
+
+	test("returns null when capture-pane fails", async () => {
+		spawnSpy.mockImplementation(() => mockSpawnResult("", "can't find session: gone", 1));
+
+		const content = await capturePaneContent("gone");
+
+		expect(content).toBeNull();
+	});
+
+	test("returns null when pane is empty (whitespace only)", async () => {
+		spawnSpy.mockImplementation(() => mockSpawnResult("   \n\n  \n", "", 0));
+
+		const content = await capturePaneContent("empty-pane");
+
+		expect(content).toBeNull();
+	});
+});
+
+describe("waitForTuiReady", () => {
+	let spawnSpy: ReturnType<typeof spyOn>;
+	let sleepSpy: ReturnType<typeof spyOn>;
+
+	beforeEach(() => {
+		spawnSpy = spyOn(Bun, "spawn");
+		// Mock Bun.sleep to avoid real delays in tests.
+		// Cast needed because Bun.sleep has overloads that confuse spyOn's type inference.
+		sleepSpy = spyOn(Bun as Record<string, unknown>, "sleep").mockResolvedValue(undefined);
+	});
+
+	afterEach(() => {
+		spawnSpy.mockRestore();
+		sleepSpy.mockRestore();
+	});
+
+	test("returns true immediately when pane has content on first poll", async () => {
+		spawnSpy.mockImplementation(() => mockSpawnResult("Claude Code ready", "", 0));
+
+		const ready = await waitForTuiReady("overstory-agent", 5_000, 500);
+
+		expect(ready).toBe(true);
+		// Should not have needed to sleep (content found on first poll)
+		expect(sleepSpy).not.toHaveBeenCalled();
+	});
+
+	test("returns true after content appears on later poll", async () => {
+		let callCount = 0;
+		spawnSpy.mockImplementation(() => {
+			callCount++;
+			if (callCount <= 3) {
+				// First 3 polls: empty pane (TUI still loading)
+				return mockSpawnResult("", "", 0);
+			}
+			// 4th poll: content appears
+			return mockSpawnResult("Welcome to Claude Code!", "", 0);
+		});
+
+		const ready = await waitForTuiReady("overstory-agent", 10_000, 500);
+
+		expect(ready).toBe(true);
+		// Should have slept 3 times (3 empty polls before content appeared)
+		expect(sleepSpy).toHaveBeenCalledTimes(3);
+	});
+
+	test("returns false when timeout expires without content", async () => {
+		// Pane always empty
+		spawnSpy.mockImplementation(() => mockSpawnResult("", "", 0));
+
+		const ready = await waitForTuiReady("overstory-agent", 2_000, 500);
+
+		expect(ready).toBe(false);
+		// 2000ms / 500ms = 4 polls, 4 sleeps
+		expect(sleepSpy).toHaveBeenCalledTimes(4);
+	});
+
+	test("returns false when capture-pane always fails", async () => {
+		spawnSpy.mockImplementation(() => mockSpawnResult("", "session not found", 1));
+
+		const ready = await waitForTuiReady("dead-session", 1_000, 500);
+
+		expect(ready).toBe(false);
+	});
+
+	test("uses default timeout and poll interval", async () => {
+		// Return content immediately
+		spawnSpy.mockImplementation(() => mockSpawnResult("ready", "", 0));
+
+		const ready = await waitForTuiReady("overstory-agent");
+
+		expect(ready).toBe(true);
 	});
 });

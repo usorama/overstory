@@ -23,6 +23,7 @@ import { AgentError, ValidationError } from "../errors.ts";
 import { openSessionStore } from "../sessions/compat.ts";
 import type { AgentSession } from "../types.ts";
 import { createSession, isSessionAlive, killSession, sendKeys } from "../worktree/tmux.ts";
+import { isRunningAsRoot } from "./sling.ts";
 
 /** Default monitor agent name. */
 const MONITOR_NAME = "monitor";
@@ -72,8 +73,24 @@ function resolveAttach(args: string[], isTTY: boolean): boolean {
 async function startMonitor(args: string[]): Promise<void> {
 	const json = args.includes("--json");
 	const shouldAttach = resolveAttach(args, !!process.stdout.isTTY);
+
+	if (isRunningAsRoot()) {
+		throw new AgentError(
+			"Cannot spawn agents as root (UID 0). The claude CLI rejects --dangerously-skip-permissions when run as root, causing the tmux session to die immediately. Run overstory as a non-root user.",
+		);
+	}
+
 	const cwd = process.cwd();
 	const config = await loadConfig(cwd);
+
+	// Gate on tier2Enabled config flag
+	if (!config.watchdog.tier2Enabled) {
+		throw new AgentError(
+			"Monitor agent (Tier 2) is disabled. Set watchdog.tier2Enabled: true in .overstory/config.yaml to enable.",
+			{ agentName: MONITOR_NAME },
+		);
+	}
+
 	const projectRoot = config.project.root;
 	const tmuxSession = monitorTmuxSession(config.project.name);
 
@@ -126,7 +143,7 @@ async function startMonitor(args: string[]): Promise<void> {
 			join(projectRoot, config.agents.baseDir),
 		);
 		const manifest = await manifestLoader.load();
-		const model = resolveModel(config, manifest, "monitor", "sonnet");
+		const { model, env } = resolveModel(config, manifest, "monitor", "sonnet");
 
 		// Spawn tmux session at project root with Claude Code (interactive mode).
 		// Inject the monitor base definition via --append-system-prompt.
@@ -139,6 +156,7 @@ async function startMonitor(args: string[]): Promise<void> {
 			claudeCmd += ` --append-system-prompt '${escaped}'`;
 		}
 		const pid = await createSession(tmuxSession, projectRoot, claudeCmd, {
+			...env,
 			OVERSTORY_AGENT_NAME: MONITOR_NAME,
 		});
 

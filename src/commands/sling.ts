@@ -22,18 +22,19 @@ import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { deployHooks } from "../agents/hooks-deployer.ts";
 import { createIdentity, loadIdentity } from "../agents/identity.ts";
-import { createManifestLoader } from "../agents/manifest.ts";
+import { createManifestLoader, resolveModel } from "../agents/manifest.ts";
 import { writeOverlay } from "../agents/overlay.ts";
 import type { BeadIssue } from "../beads/client.ts";
 import { createBeadsClient } from "../beads/client.ts";
 import { loadConfig } from "../config.ts";
 import { AgentError, HierarchyError, ValidationError } from "../errors.ts";
+import { inferDomain } from "../insights/analyzer.ts";
 import { createMulchClient } from "../mulch/client.ts";
 import { openSessionStore } from "../sessions/compat.ts";
 import { createRunStore } from "../sessions/store.ts";
 import type { AgentSession, OverlayConfig } from "../types.ts";
 import { createWorktree } from "../worktree/manager.ts";
-import { createSession, sendKeys } from "../worktree/tmux.ts";
+import { createSession, sendKeys, waitForTuiReady } from "../worktree/tmux.ts";
 
 /**
  * Calculate how many milliseconds to sleep before spawning a new agent,
@@ -62,6 +63,39 @@ export function calculateStaggerDelay(
 	const elapsed = now - new Date(mostRecent.startedAt).getTime();
 	const remaining = staggerDelayMs - elapsed;
 	return remaining > 0 ? remaining : 0;
+}
+
+/**
+ * Check if the current process is running as root (UID 0).
+ * Returns true if running as root, false otherwise.
+ * Returns false on platforms that don't support getuid (e.g., Windows).
+ *
+ * The getuid parameter is injectable for testability without mocking process.getuid.
+ */
+export function isRunningAsRoot(getuid: (() => number) | undefined = process.getuid): boolean {
+	return getuid?.() === 0;
+}
+
+/**
+ * Infer mulch domains from a list of file paths.
+ * Returns unique domains sorted alphabetically, falling back to
+ * configured defaults if no domains could be inferred.
+ */
+export function inferDomainsFromFiles(
+	files: readonly string[],
+	configDomains: readonly string[],
+): string[] {
+	const inferred = new Set<string>();
+	for (const file of files) {
+		const domain = inferDomain(file);
+		if (domain !== null) {
+			inferred.add(domain);
+		}
+	}
+	if (inferred.size === 0) {
+		return [...configDomains];
+	}
+	return [...inferred].sort();
 }
 
 /**
@@ -219,6 +253,13 @@ export async function slingCommand(args: string[]): Promise<void> {
 			field: "depth",
 			value: depthStr,
 		});
+	}
+
+	if (isRunningAsRoot()) {
+		throw new AgentError(
+			"Cannot spawn agents as root (UID 0). The claude CLI rejects --dangerously-skip-permissions when run as root, causing the tmux session to die immediately. Run overstory as a non-root user.",
+			{ agentName: name },
+		);
 	}
 
 	// Validate that spec file exists if provided, and resolve to absolute path
@@ -392,7 +433,9 @@ export async function slingCommand(args: string[]): Promise<void> {
 			branchName,
 			worktreePath,
 			fileScope,
-			mulchDomains: config.mulch.enabled ? config.mulch.domains : [],
+			mulchDomains: config.mulch.enabled
+				? inferDomainsFromFiles(fileScope, config.mulch.domains)
+				: [],
 			parentAgent: parentAgent,
 			depth,
 			canSpawn: agentDef.canSpawn,
@@ -446,8 +489,10 @@ export async function slingCommand(args: string[]): Promise<void> {
 
 		// 12. Create tmux session running claude in interactive mode
 		const tmuxSessionName = `overstory-${config.project.name}-${name}`;
-		const claudeCmd = `claude --model ${agentDef.model} --dangerously-skip-permissions`;
+		const { model, env } = resolveModel(config, manifest, capability, agentDef.model);
+		const claudeCmd = `claude --model ${model} --dangerously-skip-permissions`;
 		const pid = await createSession(tmuxSessionName, worktreePath, claudeCmd, {
+			...env,
 			OVERSTORY_AGENT_NAME: name,
 			OVERSTORY_WORKTREE_PATH: worktreePath,
 		});
@@ -485,10 +530,13 @@ export async function slingCommand(args: string[]): Promise<void> {
 			runStore.close();
 		}
 
-		// 13b. Send beacon prompt via tmux send-keys
-		// Allow Claude Code time to initialize its TUI before sending input.
-		// 3s gives the TUI enough time to render and attach its input handler.
-		await Bun.sleep(3_000);
+		// 13b. Wait for Claude Code TUI to render before sending input.
+		// Polling capture-pane is more reliable than a fixed sleep because
+		// TUI init time varies by machine load and model state.
+		await waitForTuiReady(tmuxSessionName);
+		// Buffer for the input handler to attach after initial render
+		await Bun.sleep(1_000);
+
 		const beacon = buildBeacon({
 			agentName: name,
 			capability,
@@ -498,12 +546,13 @@ export async function slingCommand(args: string[]): Promise<void> {
 		});
 		await sendKeys(tmuxSessionName, beacon);
 
-		// 13c. Send a follow-up Enter after a short delay to ensure submission.
-		// Claude Code's TUI may consume the first Enter during initialization,
-		// leaving the beacon text visible but unsubmitted (overstory-yhv6).
-		// A redundant Enter on an empty input line is harmless.
-		await Bun.sleep(500);
-		await sendKeys(tmuxSessionName, "");
+		// 13c. Follow-up Enters with increasing delays to ensure submission.
+		// Claude Code's TUI may consume early Enters during late initialization
+		// (overstory-yhv6). An Enter on an empty input line is harmless.
+		for (const delay of [1_000, 2_000]) {
+			await Bun.sleep(delay);
+			await sendKeys(tmuxSessionName, "");
+		}
 
 		// 14. Output result
 		const output = {

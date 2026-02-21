@@ -4,6 +4,8 @@ import {
 	type BeaconOptions,
 	buildBeacon,
 	calculateStaggerDelay,
+	inferDomainsFromFiles,
+	isRunningAsRoot,
 	parentHasScouts,
 	validateHierarchy,
 } from "./sling.ts";
@@ -429,5 +431,118 @@ describe("buildBeacon", () => {
 		expect(beacon).toContain("[OVERSTORY] worker-3 (builder)");
 		expect(beacon).toContain("task:overstory-deep");
 		expect(beacon).toContain("Depth: 2 | Parent: lead-main");
+	});
+});
+
+/**
+ * Tests for inferDomainsFromFiles.
+ *
+ * This pure function maps file paths to mulch domains using inferDomain(),
+ * deduplicates results, sorts them alphabetically, and falls back to
+ * configDomains when no paths produce a domain mapping.
+ */
+
+describe("inferDomainsFromFiles", () => {
+	test("infers cli domain from src/commands/ files", () => {
+		const domains = inferDomainsFromFiles(["src/commands/sling.ts"], []);
+
+		expect(domains).toEqual(["cli"]);
+	});
+
+	test("infers messaging domain from src/mail/ files", () => {
+		const domains = inferDomainsFromFiles(["src/mail/store.ts"], []);
+
+		expect(domains).toEqual(["messaging"]);
+	});
+
+	test("infers typescript domain from general src/ files", () => {
+		const domains = inferDomainsFromFiles(["src/config.ts"], []);
+
+		expect(domains).toEqual(["typescript"]);
+	});
+
+	test("infers cli domain from .test.ts files in src/commands/ (commands check takes priority)", () => {
+		const domains = inferDomainsFromFiles(["src/commands/sling.test.ts"], []);
+
+		// src/commands/ check runs before .test.ts check in inferDomain
+		expect(domains).toEqual(["cli"]);
+	});
+
+	test("infers typescript domain from .test.ts files outside recognized directories", () => {
+		const domains = inferDomainsFromFiles(["src/config.test.ts"], []);
+
+		// src/ match triggers typescript (config.test.ts is not in a specific subdirectory)
+		expect(domains).toEqual(["typescript"]);
+	});
+
+	test("deduplicates domains across multiple files", () => {
+		const files = ["src/commands/sling.ts", "src/commands/init.ts", "src/commands/merge.ts"];
+		const domains = inferDomainsFromFiles(files, []);
+
+		expect(domains).toEqual(["cli"]);
+	});
+
+	test("returns multiple domains sorted alphabetically", () => {
+		const files = ["src/commands/sling.ts", "src/mail/store.ts"];
+		const domains = inferDomainsFromFiles(files, []);
+
+		expect(domains).toEqual(["cli", "messaging"]);
+	});
+
+	test("falls back to configDomains when no files match", () => {
+		const domains = inferDomainsFromFiles(["docs/README.md"], ["typescript", "cli"]);
+
+		expect(domains).toEqual(["typescript", "cli"]);
+	});
+
+	test("falls back to configDomains when files list is empty", () => {
+		const domains = inferDomainsFromFiles([], ["agents"]);
+
+		expect(domains).toEqual(["agents"]);
+	});
+
+	test("returns empty array when no files match and configDomains is empty", () => {
+		const domains = inferDomainsFromFiles(["docs/README.md"], []);
+
+		expect(domains).toEqual([]);
+	});
+
+	test("infers agents domain from src/agents/ files", () => {
+		const domains = inferDomainsFromFiles(["src/agents/manifest.ts"], []);
+
+		expect(domains).toEqual(["agents"]);
+	});
+
+	test("infers architecture domain from src/merge/ files", () => {
+		const domains = inferDomainsFromFiles(["src/merge/queue.ts"], []);
+
+		expect(domains).toEqual(["architecture"]);
+	});
+
+	test("infers architecture domain from src/worktree/ files", () => {
+		const domains = inferDomainsFromFiles(["src/worktree/manager.ts"], []);
+
+		expect(domains).toEqual(["architecture"]);
+	});
+
+	test("handles mixed file scopes producing multiple domains", () => {
+		const files = ["src/commands/sling.ts", "src/agents/manifest.ts", "src/mail/client.ts"];
+		const domains = inferDomainsFromFiles(files, []);
+
+		expect(domains).toEqual(["agents", "cli", "messaging"]);
+	});
+});
+
+describe("isRunningAsRoot", () => {
+	test("returns true when getuid returns 0", () => {
+		expect(isRunningAsRoot(() => 0)).toBe(true);
+	});
+
+	test("returns false when getuid returns non-zero UID", () => {
+		expect(isRunningAsRoot(() => 1000)).toBe(false);
+	});
+
+	test("returns false when getuid is undefined (platform without getuid)", () => {
+		expect(isRunningAsRoot(undefined)).toBe(false);
 	});
 });

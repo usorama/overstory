@@ -26,6 +26,9 @@ describe("checkDatabases", () => {
 			beads: { enabled: true },
 			mulch: { enabled: true, domains: [], primeFormat: "markdown" },
 			merge: { aiResolveEnabled: false, reimagineEnabled: false },
+			providers: {
+				anthropic: { type: "native" },
+			},
 			watchdog: {
 				tier0Enabled: true,
 				tier0IntervalMs: 30000,

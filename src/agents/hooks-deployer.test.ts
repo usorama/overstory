@@ -142,8 +142,8 @@ describe("deployHooks", () => {
 		const content = await Bun.file(outputPath).text();
 		const parsed = JSON.parse(content);
 		const postToolUse = parsed.hooks.PostToolUse;
-		// PostToolUse should have 2 entries: logger and mail check
-		expect(postToolUse).toHaveLength(2);
+		// PostToolUse should have 3 entries: logger, mail check, and mulch diff Bash hook
+		expect(postToolUse).toHaveLength(3);
 		// First entry is the logging hook
 		expect(postToolUse[0].hooks[0].command).toContain("overstory log tool-end");
 		// Second entry is the debounced mail check
@@ -151,6 +151,21 @@ describe("deployHooks", () => {
 		expect(postToolUse[1].hooks[0].command).toContain("mail-check-agent");
 		expect(postToolUse[1].hooks[0].command).toContain("--debounce 30000");
 		expect(postToolUse[1].hooks[0].command).toContain("OVERSTORY_AGENT_NAME");
+	});
+
+	test("PostToolUse hook includes mulch diff Bash hook", async () => {
+		const worktreePath = join(tempDir, "mulch-diff-wt");
+
+		await deployHooks(worktreePath, "mulch-diff-agent");
+
+		const outputPath = join(worktreePath, ".claude", "settings.local.json");
+		const content = await Bun.file(outputPath).text();
+		const parsed = JSON.parse(content);
+		const postToolUse = parsed.hooks.PostToolUse;
+		// Third entry is the mulch diff Bash hook
+		const mulchDiffHook = postToolUse.find((h: { matcher: string }) => h.matcher === "Bash");
+		expect(mulchDiffHook).toBeDefined();
+		expect(mulchDiffHook.hooks[0].command).toContain("mulch diff HEAD~1");
 	});
 
 	test("output contains PreCompact hook", async () => {
@@ -441,9 +456,9 @@ describe("deployHooks", () => {
 		expect(writeBlockGuard).toBeDefined();
 		expect(writeBlockGuard.hooks[0].command).toContain('"decision":"block"');
 
-		// Should have multiple Bash guards: danger guard + file guard
+		// Should have multiple Bash guards: danger guard + file guard + universal push guard
 		const bashGuards = preToolUse.filter((h: { matcher: string }) => h.matcher === "Bash");
-		expect(bashGuards.length).toBe(2); // danger guard + file guard
+		expect(bashGuards.length).toBe(3); // danger guard + file guard + universal push guard
 	});
 
 	test("reviewer capability adds same guards as scout", async () => {
@@ -485,9 +500,9 @@ describe("deployHooks", () => {
 		expect(guardMatchers).toContain("NotebookEdit");
 		expect(guardMatchers).toContain("Bash");
 
-		// Should have 2 Bash guards: danger guard + file guard
+		// Should have 3 Bash guards: danger guard + file guard + universal push guard
 		const bashGuards = preToolUse.filter((h: { matcher: string }) => h.matcher === "Bash");
-		expect(bashGuards.length).toBe(2);
+		expect(bashGuards.length).toBe(3);
 	});
 
 	test("builder capability gets path boundary + Bash danger + Bash path boundary guards + native team tool blocks", async () => {
@@ -517,9 +532,9 @@ describe("deployHooks", () => {
 		expect(writeGuards[0].hooks[0].command).toContain("OVERSTORY_WORKTREE_PATH");
 		expect(writeGuards[0].hooks[0].command).not.toContain("cannot modify files");
 
-		// Builder should have 2 Bash guards: danger guard + path boundary guard
+		// Builder should have 3 Bash guards: danger guard + path boundary guard + universal push guard
 		const bashGuards = preToolUse.filter((h: { matcher: string }) => h.matcher === "Bash");
-		expect(bashGuards.length).toBe(2);
+		expect(bashGuards.length).toBe(3);
 		// One should be the danger guard (checks git push)
 		const dangerGuard = bashGuards.find(
 			(h: { hooks: Array<{ command: string }> }) =>
@@ -1118,7 +1133,7 @@ describe("structural enforcement integration", () => {
 
 		// Find the bash file guard (the second Bash entry, after the danger guard)
 		const bashGuards = preToolUse.filter((h: { matcher: string }) => h.matcher === "Bash");
-		expect(bashGuards.length).toBe(2);
+		expect(bashGuards.length).toBe(3);
 
 		// The file guard (second Bash guard) should whitelist git add/commit
 		const fileGuard = bashGuards[1];
@@ -1226,6 +1241,14 @@ describe("structural enforcement integration", () => {
 		for (const entry of guardEntries) {
 			for (const hook of entry.hooks) {
 				if (hook.type === "command") {
+					// Skip the universal git push guard which intentionally lacks ENV_GUARD
+					if (
+						entry.matcher === "Bash" &&
+						hook.command.includes("git push is blocked") &&
+						!hook.command.includes("OVERSTORY_AGENT_NAME")
+					) {
+						continue;
+					}
 					expect(hook.command).toContain("OVERSTORY_AGENT_NAME");
 				}
 			}
@@ -1573,8 +1596,8 @@ describe("bash path boundary integration", () => {
 		const preToolUse = parsed.hooks.PreToolUse;
 
 		const bashGuards = preToolUse.filter((h: { matcher: string }) => h.matcher === "Bash");
-		// Should have 2 Bash guards: danger guard + path boundary guard
-		expect(bashGuards.length).toBe(2);
+		// Should have 3 Bash guards: danger guard + path boundary guard + universal push guard
+		expect(bashGuards.length).toBe(3);
 
 		// Find the path boundary guard
 		const pathGuard = bashGuards.find((h: { hooks: Array<{ command: string }> }) =>
@@ -1595,7 +1618,7 @@ describe("bash path boundary integration", () => {
 		const preToolUse = parsed.hooks.PreToolUse;
 
 		const bashGuards = preToolUse.filter((h: { matcher: string }) => h.matcher === "Bash");
-		expect(bashGuards.length).toBe(2);
+		expect(bashGuards.length).toBe(3);
 
 		const pathGuard = bashGuards.find((h: { hooks: Array<{ command: string }> }) =>
 			h.hooks[0]?.command?.includes("Bash path boundary violation"),
@@ -1613,9 +1636,9 @@ describe("bash path boundary integration", () => {
 		const parsed = JSON.parse(content);
 		const preToolUse = parsed.hooks.PreToolUse;
 
-		// Scout gets danger guard + file guard (2 Bash guards), but NOT path boundary
+		// Scout gets danger guard + file guard + universal push guard (3 Bash guards), but NOT path boundary
 		const bashGuards = preToolUse.filter((h: { matcher: string }) => h.matcher === "Bash");
-		expect(bashGuards.length).toBe(2);
+		expect(bashGuards.length).toBe(3);
 
 		const pathGuard = bashGuards.find((h: { hooks: Array<{ command: string }> }) =>
 			h.hooks[0]?.command?.includes("Bash path boundary violation"),
@@ -1701,5 +1724,26 @@ describe("bash path boundary integration", () => {
 				h.matcher === "Bash" && h.hooks[0]?.command?.includes("Bash path boundary violation"),
 		);
 		expect(pathGuard).toBeDefined();
+	});
+
+	test("deployed hooks include universal git push guard without ENV_GUARD", async () => {
+		const worktreePath = join(tempDir, "universal-push-wt");
+
+		await deployHooks(worktreePath, "universal-push-agent", "builder");
+
+		const outputPath = join(worktreePath, ".claude", "settings.local.json");
+		const content = await Bun.file(outputPath).text();
+		const parsed = JSON.parse(content);
+		const preToolUse = parsed.hooks.PreToolUse;
+
+		// Find the universal git push guard: Bash matcher, blocks git push, no ENV_GUARD
+		const universalGuard = preToolUse.find(
+			(h: { matcher: string; hooks: Array<{ command: string }> }) =>
+				h.matcher === "Bash" &&
+				h.hooks[0]?.command?.includes("git push is blocked") &&
+				!h.hooks[0]?.command?.includes("OVERSTORY_AGENT_NAME"),
+		);
+		expect(universalGuard).toBeDefined();
+		expect(universalGuard.hooks[0].command).toContain('"decision":"block"');
 	});
 });

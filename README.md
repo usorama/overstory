@@ -135,9 +135,11 @@ overstory prime                         Load context for orchestrator/agent
 overstory status                        Show all active agents, worktrees, beads state
   --json                                 JSON output
   --verbose                              Show detailed agent info
+  --all                                  Show all runs (default: current run only)
 
 overstory dashboard                     Live TUI dashboard for agent monitoring
   --interval <ms>                        Refresh interval (default: 2000)
+  --all                                  Show all runs (default: current run only)
 
 overstory hooks install                 Install orchestrator hooks to .claude/settings.local.json
   --force                                Overwrite existing hooks
@@ -180,6 +182,7 @@ overstory worktree list                 List worktrees with status
 overstory worktree clean                Remove completed worktrees
   --completed                            Only finished agents
   --all                                  Force remove all
+  --force                                Delete even if branches are unmerged
 
 overstory monitor start                 Start Tier 2 monitor agent
 overstory monitor stop                  Stop monitor agent
@@ -243,6 +246,7 @@ overstory logs [options]                Query NDJSON logs across agents
 
 overstory costs                         Token/cost analysis and breakdown
   --live                                 Show real-time token usage for active agents
+  --self                                 Show cost for current orchestrator session
   --agent <name>                         Filter by agent
   --run <id>                             Filter by run
   --by-capability                        Group by capability type
@@ -263,13 +267,13 @@ Global Flags:
 - **Dependencies**: Zero runtime dependencies — only Bun built-in APIs
 - **Database**: SQLite via `bun:sqlite` (WAL mode for concurrent access)
 - **Linting**: Biome (formatter + linter)
-- **Testing**: `bun test` (1848 tests across 73 files, colocated with source)
+- **Testing**: `bun test` (1996 tests across 73 files, colocated with source)
 - **External CLIs**: `bd` (beads), `mulch`, `git`, `tmux` — invoked as subprocesses
 
 ## Development
 
 ```bash
-# Run tests (1848 tests across 73 files)
+# Run tests (1996 tests across 73 files)
 bun test
 
 # Run a single test

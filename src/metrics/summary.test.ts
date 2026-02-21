@@ -47,6 +47,7 @@ function makeSession(overrides: Partial<SessionMetrics> = {}): SessionMetrics {
 		cacheCreationTokens: 0,
 		estimatedCostUsd: null,
 		modelUsed: null,
+		runId: null,
 		...overrides,
 	};
 }

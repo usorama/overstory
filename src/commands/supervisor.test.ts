@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { isRunningAsRoot } from "./sling.ts";
 import { buildSupervisorBeacon, supervisorCommand } from "./supervisor.ts";
 
 /**
@@ -175,5 +176,12 @@ describe("supervisorCommand", () => {
 		expect(async () => {
 			await supervisorCommand(["stop"]);
 		}).toThrow(/--name/);
+	});
+});
+
+describe("isRunningAsRoot (imported from sling)", () => {
+	test("is accessible from supervisor test file", () => {
+		expect(isRunningAsRoot(() => 0)).toBe(true);
+		expect(isRunningAsRoot(() => 1000)).toBe(false);
 	});
 });

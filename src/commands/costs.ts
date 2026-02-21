@@ -1,15 +1,18 @@
 /**
- * CLI command: overstory costs [--agent <name>] [--run <id>] [--by-capability] [--last <n>] [--json]
+ * CLI command: overstory costs [--agent <name>] [--run <id>] [--by-capability] [--last <n>] [--self] [--json]
  *
  * Shows token/cost analysis and breakdown for agent sessions.
  * Data source: metrics.db via createMetricsStore().
+ * Use --self to parse the current orchestrator session's transcript directly.
  */
 
+import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { loadConfig } from "../config.ts";
 import { ValidationError } from "../errors.ts";
 import { color } from "../logging/color.ts";
 import { createMetricsStore } from "../metrics/store.ts";
+import { estimateCost, parseTranscriptUsage } from "../metrics/transcript.ts";
 import { openSessionStore } from "../sessions/compat.ts";
 import type { SessionMetrics } from "../types.ts";
 
@@ -49,6 +52,51 @@ function padRight(str: string, width: number): string {
 /** Left-pad a string to the given width. */
 function padLeft(str: string, width: number): string {
 	return str.length >= width ? str : " ".repeat(width - str.length) + str;
+}
+
+/**
+ * Discover the orchestrator's Claude Code transcript JSONL file.
+ *
+ * Scans ~/.claude/projects/{project-key}/ for JSONL files and returns
+ * the most recently modified one, corresponding to the current orchestrator session.
+ *
+ * @param projectRoot - Absolute path to the project root
+ * @returns Absolute path to the most recent transcript, or null if none found
+ */
+async function discoverOrchestratorTranscript(projectRoot: string): Promise<string | null> {
+	const homeDir = process.env.HOME ?? "";
+	if (homeDir.length === 0) return null;
+
+	const projectKey = projectRoot.replace(/\//g, "-");
+	const projectDir = join(homeDir, ".claude", "projects", projectKey);
+
+	let entries: string[];
+	try {
+		entries = await readdir(projectDir);
+	} catch {
+		return null;
+	}
+
+	const jsonlFiles = entries.filter((e) => e.endsWith(".jsonl"));
+	if (jsonlFiles.length === 0) return null;
+
+	let bestPath: string | null = null;
+	let bestMtime = 0;
+
+	for (const file of jsonlFiles) {
+		const filePath = join(projectDir, file);
+		try {
+			const fileStat = await stat(filePath);
+			if (fileStat.mtimeMs > bestMtime) {
+				bestMtime = fileStat.mtimeMs;
+				bestPath = filePath;
+			}
+		} catch {
+			// Skip files we cannot stat
+		}
+	}
+
+	return bestPath;
 }
 
 /** Aggregate totals from a list of SessionMetrics. */
@@ -196,6 +244,7 @@ Usage: overstory costs [options]
 
 Options:
   --live                 Show real-time token usage for active agents
+  --self                 Show cost for the current orchestrator session
   --agent <name>         Filter by agent name
   --run <id>             Filter by run ID
   --by-capability        Group results by capability with subtotals
@@ -204,7 +253,7 @@ Options:
   --help, -h             Show this help`;
 
 /**
- * Entry point for `overstory costs [--agent <name>] [--run <id>] [--by-capability] [--last <n>] [--json]`.
+ * Entry point for `overstory costs [--agent <name>] [--run <id>] [--by-capability] [--last <n>] [--self] [--json]`.
  */
 export async function costsCommand(args: string[]): Promise<void> {
 	if (args.includes("--help") || args.includes("-h")) {
@@ -214,6 +263,7 @@ export async function costsCommand(args: string[]): Promise<void> {
 
 	const json = hasFlag(args, "--json");
 	const live = hasFlag(args, "--live");
+	const self = hasFlag(args, "--self");
 	const byCapability = hasFlag(args, "--by-capability");
 	const agentName = getFlag(args, "--agent");
 	const runId = getFlag(args, "--run");
@@ -234,6 +284,60 @@ export async function costsCommand(args: string[]): Promise<void> {
 	const cwd = process.cwd();
 	const config = await loadConfig(cwd);
 	const overstoryDir = join(config.project.root, ".overstory");
+
+	// Handle --self flag (early return for self-scan)
+	if (self) {
+		const transcriptPath = await discoverOrchestratorTranscript(config.project.root);
+		if (!transcriptPath) {
+			if (json) {
+				process.stdout.write(
+					JSON.stringify({ error: "no_transcript", message: "No orchestrator transcript found" }) +
+						"\n",
+				);
+			} else {
+				process.stdout.write(
+					"No orchestrator transcript found.\nExpected at: ~/.claude/projects/{project-key}/*.jsonl\n",
+				);
+			}
+			return;
+		}
+
+		const usage = await parseTranscriptUsage(transcriptPath);
+		const cost = estimateCost(usage);
+		const cacheTotal = usage.cacheReadTokens + usage.cacheCreationTokens;
+
+		if (json) {
+			process.stdout.write(
+				`${JSON.stringify({
+					source: "self",
+					transcriptPath,
+					model: usage.modelUsed,
+					inputTokens: usage.inputTokens,
+					outputTokens: usage.outputTokens,
+					cacheReadTokens: usage.cacheReadTokens,
+					cacheCreationTokens: usage.cacheCreationTokens,
+					estimatedCostUsd: cost,
+				})}\n`,
+			);
+		} else {
+			const w = process.stdout.write.bind(process.stdout);
+			const separator = "\u2500".repeat(70);
+
+			w(`${color.bold}Orchestrator Session Cost${color.reset}\n`);
+			w(`${"=".repeat(70)}\n`);
+			w(`${padRight("Model:", 12)}${usage.modelUsed ?? "unknown"}\n`);
+			w(`${padRight("Transcript:", 12)}${transcriptPath}\n`);
+			w(`${color.dim}${separator}${color.reset}\n`);
+			w(`${padRight("Input tokens:", 22)}${padLeft(formatNumber(usage.inputTokens), 12)}\n`);
+			w(`${padRight("Output tokens:", 22)}${padLeft(formatNumber(usage.outputTokens), 12)}\n`);
+			w(`${padRight("Cache tokens:", 22)}${padLeft(formatNumber(cacheTotal), 12)}\n`);
+			w(`${color.dim}${separator}${color.reset}\n`);
+			w(
+				`${color.green}${color.bold}${padRight("Estimated cost:", 22)}${padLeft(formatCost(cost), 12)}${color.reset}\n`,
+			);
+		}
+		return;
+	}
 
 	// Handle --live flag (early return for live view)
 	if (live) {
@@ -427,16 +531,7 @@ export async function costsCommand(args: string[]): Promise<void> {
 		if (agentName !== undefined) {
 			sessions = metricsStore.getSessionsByAgent(agentName);
 		} else if (runId !== undefined) {
-			// Cross-reference with SessionStore to find agents in the run
-			const { store: sessionStore } = openSessionStore(overstoryDir);
-			try {
-				const runSessions = sessionStore.getByRun(runId);
-				const agentNames = new Set(runSessions.map((s) => s.agentName));
-				const allRecent = metricsStore.getRecentSessions(1000);
-				sessions = allRecent.filter((m) => agentNames.has(m.agentName));
-			} finally {
-				sessionStore.close();
-			}
+			sessions = metricsStore.getSessionsByRun(runId);
 		} else {
 			sessions = metricsStore.getRecentSessions(last);
 		}
