@@ -48,6 +48,11 @@ const mockConfig: OverstoryConfig = {
 		verbose: false,
 		redactSecrets: true,
 	},
+	planning: {
+		enabled: true,
+		defaultMode: "auto",
+		plansTracked: true,
+	},
 };
 
 describe("checkVersion", () => {

@@ -218,6 +218,7 @@ Options:
   --files <f1,f2,...>        Exclusive file scope (comma-separated)
   --parent <agent-name>      Parent agent for hierarchy tracking
   --depth <n>                Current hierarchy depth (default: 0)
+  --mode <plan|execute>        Lead mode: plan (research-only) or execute (default: execute)
   --force-hierarchy            Bypass hierarchy validation (debugging only)
   --json                     Output result as JSON
   --help, -h                 Show this help`;
@@ -243,6 +244,14 @@ export async function slingCommand(args: string[]): Promise<void> {
 	const depthStr = getFlag(args, "--depth");
 	const depth = depthStr !== undefined ? Number.parseInt(depthStr, 10) : 0;
 	const forceHierarchy = args.includes("--force-hierarchy");
+	const modeRaw = getFlag(args, "--mode");
+	const mode = modeRaw as "plan" | "execute" | undefined;
+	if (mode !== undefined && mode !== "plan" && mode !== "execute") {
+		throw new ValidationError("--mode must be 'plan' or 'execute'", {
+			field: "mode",
+			value: modeRaw,
+		});
+	}
 
 	if (!name || name.trim().length === 0) {
 		throw new ValidationError("--name is required for sling", { field: "name" });
@@ -426,6 +435,15 @@ export async function slingCommand(args: string[]): Promise<void> {
 			}
 		}
 
+		// Detect existing plan file for execute-mode leads
+		let existingPlan: string | undefined;
+		if (mode === "execute" || (mode === undefined && capability === "lead")) {
+			const planPath = join(overstoryDir, "plans", `${taskId}.md`);
+			if (await Bun.file(planPath).exists()) {
+				existingPlan = planPath;
+			}
+		}
+
 		const overlayConfig: OverlayConfig = {
 			agentName: name,
 			beadId: taskId,
@@ -442,6 +460,9 @@ export async function slingCommand(args: string[]): Promise<void> {
 			capability,
 			baseDefinition,
 			mulchExpertise,
+			mode,
+			currentDate: new Date().toISOString().split("T")[0],
+			existingPlan,
 		};
 
 		try {

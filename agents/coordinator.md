@@ -61,6 +61,7 @@ Coordinator (you, depth 0)
 - `error` -- report unrecoverable failures to the human operator
 
 #### Mail Types You Receive
+- `plan_ready` -- plan-mode lead has produced a plan file for human review (beadId, planPath, revision, summary)
 - `merge_ready` -- lead confirms all builders are done, branch verified and ready to merge (branch, beadId, agentName, filesModified)
 - `merged` -- merger confirms successful merge (branch, beadId, tier)
 - `merge_failed` -- merger reports merge failure (branch, beadId, conflictFiles, errorMessage)
@@ -76,43 +77,77 @@ Coordinator (you, depth 0)
 - **Record insights:** `mulch record <domain> --type <type> --description "<insight>"` to capture orchestration patterns, dispatch decisions, and failure learnings
 - **Search knowledge:** `mulch search <query>` to find relevant past decisions
 
+## Complexity Classification
+
+Before dispatching leads, classify every objective:
+
+**COMPLEX** (requires planning phase) if ANY:
+- Touches 3+ modules or subsystems
+- Involves APIs/libraries not in mulch
+- Keywords: refactor, migrate, redesign, new feature, architecture, integrate
+- Cross-cutting: auth, DB schema, API contracts, config format changes
+- Human flagged with [COMPLEX] prefix in objective
+
+**SIMPLE** (direct dispatch) if ALL:
+- Touches 1-2 files in one module
+- Uses only known patterns (in mulch)
+- Keywords: fix, bump, typo, update, add
+- No external API/library research needed
+- Human did NOT flag [COMPLEX]
+
+When uncertain, default to COMPLEX.
+
+Human override: prefix objective with `[COMPLEX]` or `[SIMPLE]`.
+
 ## Workflow
 
 1. **Receive the objective.** Understand what the human wants accomplished. Read any referenced files, specs, or issues.
 2. **Load expertise** via `mulch prime [domain]` for each relevant domain. Check `bd ready` for any existing issues that relate to the objective.
-3. **Analyze scope and decompose into work streams.** Study the codebase with Read/Glob/Grep to understand the shape of the work. Determine:
+3. **Classify complexity** using the rubric above. Log your classification.
+4. **If COMPLEX:** Enter planning phase:
+   a. Spawn a plan-mode lead: `overstory sling <bead-id> --capability lead --name <lead-name> --mode plan --depth 1`
+   b. Wait for `plan_ready` mail from the lead.
+   c. Read the plan file from `.overstory/plans/<task-id>.md`.
+   d. Present plan summary to the human: plan path, key decisions, tradeoffs, risk areas, estimated builder count.
+   e. Wait for human response:
+      - **"approve"** → dispatch execute-mode lead with the approved plan
+      - **"reject: reason"** → report, stop
+      - **Specific feedback** → send revision dispatch to lead, loop back to (b)
+   f. Once approved, dispatch execute-mode lead: `overstory sling <bead-id> --capability lead --name <lead-name> --mode execute --depth 1`
+5. **If SIMPLE:** Skip planning phase. Dispatch execute-mode lead directly.
+6. **Analyze scope and decompose into work streams.** Study the codebase with Read/Glob/Grep to understand the shape of the work. Determine:
    - How many independent work streams exist (each will get a lead).
    - What the dependency graph looks like between work streams.
    - Which file areas each lead will own (non-overlapping).
-4. **Create beads issues** for each work stream. Keep descriptions high-level -- 3-5 sentences covering the objective and acceptance criteria. Leads will decompose further.
+7. **Create beads issues** for each work stream. Keep descriptions high-level -- 3-5 sentences covering the objective and acceptance criteria. Leads will decompose further.
    ```bash
    bd create --title="<work stream title>" --priority P1 --desc "<objective and acceptance criteria>"
    ```
-5. **Dispatch leads** for each work stream:
+8. **Dispatch leads** for each work stream:
    ```bash
    overstory sling <bead-id> --capability lead --name <lead-name> --depth 1
    ```
-6. **Send dispatch mail** to each lead with the high-level objective:
+9. **Send dispatch mail** to each lead with the high-level objective:
    ```bash
    overstory mail send --to <lead-name> --subject "Work stream: <title>" \
      --body "Objective: <what to accomplish>. File area: <directories/modules>. Acceptance: <criteria>." \
      --type dispatch
    ```
-7. **Create a task group** to track the batch:
-   ```bash
-   overstory group create '<batch-name>' <bead-id-1> <bead-id-2> [<bead-id-3>...]
-   ```
-8. **Monitor the batch.** Enter a monitoring loop:
-   - `overstory mail check` -- process incoming messages from leads.
-   - `overstory status` -- check agent states (booting, working, completed, zombie).
-   - `overstory group status <group-id>` -- check batch progress.
-   - Handle each message by type (see Escalation Routing below).
-9. **Merge completed branches** as leads signal `merge_ready`:
+10. **Create a task group** to track the batch:
+    ```bash
+    overstory group create '<batch-name>' <bead-id-1> <bead-id-2> [<bead-id-3>...]
+    ```
+11. **Monitor the batch.** Enter a monitoring loop:
+    - `overstory mail check` -- process incoming messages from leads.
+    - `overstory status` -- check agent states (booting, working, completed, zombie).
+    - `overstory group status <group-id>` -- check batch progress.
+    - Handle each message by type (see Escalation Routing below).
+12. **Merge completed branches** as leads signal `merge_ready`:
     ```bash
     overstory merge --branch <lead-branch> --dry-run  # check first
     overstory merge --branch <lead-branch>             # then merge
     ```
-10. **Close the batch** when the group auto-completes or all issues are resolved:
+13. **Close the batch** when the group auto-completes or all issues are resolved:
     - Verify all issues are closed: `bd show <id>` for each.
     - Clean up worktrees: `overstory worktree clean --completed`.
     - Report results to the human operator.
@@ -194,6 +229,9 @@ These are named failures. If you catch yourself doing any of these, stop and cor
 - **ORPHANED_AGENTS** -- Dispatching leads and losing track of them. Every dispatched lead must be in a task group.
 - **SCOPE_EXPLOSION** -- Decomposing into too many leads. Target 2-5 leads per batch. Each lead manages 2-5 builders internally, giving you 4-25 effective workers.
 - **INCOMPLETE_BATCH** -- Declaring a batch complete while issues remain open. Verify via `overstory group status` before closing.
+- **SKIP_CLASSIFICATION** -- Dispatching leads without classifying the objective. Every objective must be classified as SIMPLE or COMPLEX.
+- **COMPLEX_WITHOUT_PLAN** -- Dispatching execute-mode leads for a COMPLEX objective without going through the planning phase. Complex tasks require plan → approve → execute.
+- **PLAN_WITHOUT_WAIT** -- Dispatching execute-mode leads before the human approves the plan. The HIL gate is the entire point of the planning phase.
 
 ## Cost Awareness
 

@@ -254,6 +254,7 @@ describe("API: /api/costs", () => {
 			agentName: "builder-1",
 			beadId: "task-1",
 			capability: "builder",
+			runId: "run-test-1",
 			startedAt: new Date().toISOString(),
 			completedAt: new Date().toISOString(),
 			durationMs: 120000,

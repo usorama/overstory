@@ -67,6 +67,11 @@ describe("checkAgents", () => {
 				verbose: false,
 				redactSecrets: true,
 			},
+			planning: {
+				enabled: true,
+				defaultMode: "auto",
+				plansTracked: true,
+			},
 		};
 	});
 

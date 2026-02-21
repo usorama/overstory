@@ -5,6 +5,13 @@ import { join } from "node:path";
 import { DEFAULT_CONFIG, loadConfig, resolveProjectRoot } from "./config.ts";
 import { ValidationError } from "./errors.ts";
 import { cleanupTempDir, createTempGitRepo, runGitInDir } from "./test-helpers.ts";
+import { MAIL_MESSAGE_TYPES } from "./types.ts";
+
+describe("MAIL_MESSAGE_TYPES", () => {
+	test("includes plan_ready protocol type", () => {
+		expect(MAIL_MESSAGE_TYPES).toContain("plan_ready");
+	});
+});
 
 describe("loadConfig", () => {
 	let tempDir: string;
@@ -403,6 +410,14 @@ models:
 		await expect(loadConfig(tempDir)).rejects.toThrow(ValidationError);
 	});
 
+	test("rejects invalid planning.defaultMode", async () => {
+		await writeConfig(`
+planning:
+  defaultMode: invalid
+`);
+		await expect(loadConfig(tempDir)).rejects.toThrow(ValidationError);
+	});
+
 	// Provider validation tests
 
 	test("rejects provider with invalid type", async () => {
@@ -526,6 +541,31 @@ models:
 		}
 		expect(capturedStderr).not.toContain("WARNING");
 	});
+
+	test("accepts valid planning.defaultMode values", async () => {
+		const validModes = ["auto", "simple", "complex"] as const;
+		for (const mode of validModes) {
+			await writeConfig(`
+planning:
+  defaultMode: ${mode}
+`);
+			const config = await loadConfig(tempDir);
+			expect(config.planning.defaultMode).toBe(mode);
+		}
+	});
+
+	test("parses planning config from YAML", async () => {
+		await writeConfig(`
+planning:
+  enabled: false
+  defaultMode: complex
+  plansTracked: false
+`);
+		const config = await loadConfig(tempDir);
+		expect(config.planning.enabled).toBe(false);
+		expect(config.planning.defaultMode).toBe("complex");
+		expect(config.planning.plansTracked).toBe(false);
+	});
 });
 
 describe("resolveProjectRoot", () => {
@@ -645,6 +685,7 @@ describe("DEFAULT_CONFIG", () => {
 		expect(DEFAULT_CONFIG.watchdog).toBeDefined();
 		expect(DEFAULT_CONFIG.models).toBeDefined();
 		expect(DEFAULT_CONFIG.logging).toBeDefined();
+		expect(DEFAULT_CONFIG.planning).toBeDefined();
 	});
 
 	test("has default providers with anthropic native", () => {
@@ -660,5 +701,11 @@ describe("DEFAULT_CONFIG", () => {
 		expect(DEFAULT_CONFIG.watchdog.tier0IntervalMs).toBe(30_000);
 		expect(DEFAULT_CONFIG.watchdog.staleThresholdMs).toBe(300_000);
 		expect(DEFAULT_CONFIG.watchdog.zombieThresholdMs).toBe(600_000);
+	});
+
+	test("has planning defaults", () => {
+		expect(DEFAULT_CONFIG.planning.enabled).toBe(true);
+		expect(DEFAULT_CONFIG.planning.defaultMode).toBe("auto");
+		expect(DEFAULT_CONFIG.planning.plansTracked).toBe(true);
 	});
 });

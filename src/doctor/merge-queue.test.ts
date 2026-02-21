@@ -41,6 +41,11 @@ describe("checkMergeQueue", () => {
 			},
 			models: {},
 			logging: { verbose: false, redactSecrets: true },
+			planning: {
+				enabled: true,
+				defaultMode: "auto",
+				plansTracked: true,
+			},
 		};
 	});
 

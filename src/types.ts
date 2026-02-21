@@ -67,6 +67,11 @@ export interface OverstoryConfig {
 		verbose: boolean;
 		redactSecrets: boolean;
 	};
+	planning: {
+		enabled: boolean;
+		defaultMode: "auto" | "simple" | "complex";
+		plansTracked: boolean;
+	};
 }
 
 // === Agent Manifest ===
@@ -153,7 +158,8 @@ export type MailProtocolType =
 	| "escalation"
 	| "health_check"
 	| "dispatch"
-	| "assign";
+	| "assign"
+	| "plan_ready";
 
 /** All valid mail message types. */
 export type MailMessageType = MailSemanticType | MailProtocolType;
@@ -172,6 +178,7 @@ export const MAIL_MESSAGE_TYPES: readonly MailMessageType[] = [
 	"health_check",
 	"dispatch",
 	"assign",
+	"plan_ready",
 ] as const;
 
 export interface MailMessage {
@@ -250,6 +257,14 @@ export interface AssignPayload {
 	branch: string;
 }
 
+/** Plan-mode lead signals that a plan artifact is ready for human review. */
+export interface PlanReadyPayload {
+	beadId: string;
+	planPath: string;
+	revision: number;
+	summary: string;
+}
+
 /** Maps protocol message types to their payload interfaces. */
 export interface MailPayloadMap {
 	worker_done: WorkerDonePayload;
@@ -260,6 +275,7 @@ export interface MailPayloadMap {
 	health_check: HealthCheckPayload;
 	dispatch: DispatchPayload;
 	assign: AssignPayload;
+	plan_ready: PlanReadyPayload;
 }
 
 // === Overlay ===
@@ -280,6 +296,12 @@ export interface OverlayConfig {
 	baseDefinition: string;
 	/** Pre-fetched mulch expertise output to embed directly in the overlay. */
 	mulchExpertise?: string;
+	/** Lead mode: plan (research-only) or execute (default). */
+	mode?: "plan" | "execute";
+	/** ISO date for web search currency (scouts + leads). */
+	currentDate?: string;
+	/** Path to approved plan file (execute-mode leads). */
+	existingPlan?: string;
 }
 
 // === Merge Queue ===

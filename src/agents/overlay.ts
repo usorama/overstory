@@ -53,6 +53,63 @@ function formatMulchExpertise(expertise: string | undefined): string {
 	].join("\n");
 }
 
+/**
+ * Format the lead mode section for the overlay.
+ * Plan-mode leads get instructions about plan artifact production.
+ * Execute-mode leads get instructions about following an approved plan.
+ * Non-lead agents get no output.
+ */
+export function formatLeadMode(config: OverlayConfig): string {
+	if (config.mode === "plan") {
+		return [
+			"## Lead Mode: Plan",
+			"",
+			"You are in **plan mode**. Your job is to research and produce a plan artifact.",
+			"You must NOT spawn builders. Your workflow:",
+			"",
+			"1. Spawn research-capable scouts to explore the codebase and gather external knowledge.",
+			"2. Synthesize scout findings into a plan file at `.overstory/plans/<task-id>.md`.",
+			"3. Send `plan_ready` mail to the coordinator with the plan path and summary.",
+			"4. Stop. Do NOT spawn builders or begin implementation.",
+		].join("\n");
+	}
+
+	if (config.mode === "execute") {
+		return [
+			"## Lead Mode: Execute",
+			"",
+			"You are in **execute mode**. Follow the standard Scout → Build → Verify workflow.",
+			config.existingPlan
+				? `An approved plan exists — read it before decomposing: \`${config.existingPlan}\``
+				: "No existing plan was found. Proceed with standard decomposition.",
+		].join("\n");
+	}
+
+	return "";
+}
+
+/**
+ * Format the current date for the overlay.
+ * Scouts and leads get a date stamp so they use the right year in web searches.
+ */
+export function formatCurrentDate(config: OverlayConfig): string {
+	if (config.currentDate) {
+		return `**Current Date:** ${config.currentDate} — use this year in all web searches.`;
+	}
+	return "";
+}
+
+/**
+ * Format the existing plan reference for the overlay.
+ * Execute-mode leads with an approved plan get a pointer to it.
+ */
+export function formatExistingPlan(config: OverlayConfig): string {
+	if (config.existingPlan) {
+		return `**Approved Plan:** ${config.existingPlan} — read this before decomposing.`;
+	}
+	return "";
+}
+
 /** Capabilities that are read-only and should not get quality gates for commits/tests/lint. */
 const READ_ONLY_CAPABILITIES = new Set(["scout", "reviewer"]);
 
@@ -192,6 +249,9 @@ export async function generateOverlay(config: OverlayConfig): Promise<string> {
 		"{{CONSTRAINTS}}": formatConstraints(config),
 		"{{SPEC_INSTRUCTION}}": specInstruction,
 		"{{BASE_DEFINITION}}": config.baseDefinition,
+		"{{LEAD_MODE}}": formatLeadMode(config),
+		"{{CURRENT_DATE}}": formatCurrentDate(config),
+		"{{EXISTING_PLAN}}": formatExistingPlan(config),
 	};
 
 	let result = template;

@@ -52,6 +52,43 @@ overstory sling <bead-id> \
 - **Record patterns:** `mulch record <domain>` to capture orchestration insights
 - **Record worker insights:** When scout or reviewer result mails contain `INSIGHT:` lines, record them via `mulch record <domain> --type <type> --description "<insight>"`. Read-only agents cannot write files, so they flow insights through mail to you.
 
+## Modes
+
+Leads operate in one of two modes, set by `--mode` on `overstory sling`:
+
+### Plan Mode (`--mode plan`)
+
+In plan mode, you research and produce a plan artifact. You do NOT spawn builders.
+
+1. **Phase 1 — Scout:** Spawn research-capable scouts to explore the codebase and gather external knowledge.
+2. **Phase 2 — Plan:** Synthesize scout findings into a plan file at `.overstory/plans/<task-id>.md`. Include:
+   - Objective and scope
+   - Decomposition strategy (proposed builders, file ownership)
+   - Key findings from scouts (codebase patterns, external research)
+   - Risk areas and tradeoffs
+   - Estimated builder count
+   - Revision log (empty for first draft)
+3. **Phase 3 — Stop:** Send `plan_ready` mail to coordinator with plan path and summary. Do NOT spawn builders.
+
+### Execute Mode (`--mode execute` or default)
+
+Standard three-phase workflow (Scout → Build → Verify) as documented below.
+
+If a plan file exists at `.overstory/plans/<task-id>.md` (indicated by `EXISTING_PLAN` in your overlay), read it as the basis for decomposition. The plan was human-approved — follow its decomposition strategy and respect its constraints. Scout phase can be abbreviated if the plan already contains sufficient codebase analysis.
+
+### Plan Revision
+
+When the coordinator sends a revision dispatch (feedback from human):
+1. Read the existing plan file
+2. Read the feedback from coordinator mail
+3. Update the plan **in place** (same file, not a new artifact)
+4. Add entry to the revision log section at the bottom of the plan
+5. Send `plan_ready` again
+
+### Spec Context Cascade
+
+When writing specs for builders in execute mode, include relevant strategic context from the plan: codebase conventions, architectural patterns, key constraints, design rationale. Builders must make tradeoff decisions informed by the plan, not just technical correctness.
+
 ## Three-Phase Workflow
 
 ### Phase 1 — Scout
@@ -216,6 +253,8 @@ These are named failures. If you catch yourself doing any of these, stop and cor
 - **INCOMPLETE_CLOSE** -- Running `bd close` before all subtasks are complete or accounted for, or without sending `merge_ready` to the coordinator.
 - **REVIEW_SKIP** -- Sending `merge_ready` for a builder's branch without that builder's work having passed a reviewer PASS verdict. Every `merge_ready` must follow a reviewer PASS. `overstory mail send --type merge_ready` will warn if no reviewer sessions are detected. If you find yourself about to send `merge_ready` without having spawned reviewers, STOP — go back and spawn reviewers first.
 - **MISSING_MULCH_RECORD** -- Closing without recording mulch learnings. Every lead session produces orchestration insights (decomposition strategies, coordination patterns, failures encountered). Skipping `mulch record` loses knowledge for future agents.
+- **PLAN_MODE_BUILD** -- Spawning builders while in plan mode. Plan-mode leads produce a plan artifact and stop. They do not implement.
+- **EXECUTE_WITHOUT_PLAN** -- In execute mode, ignoring an existing approved plan at `EXISTING_PLAN`. If a plan exists, it was human-approved — use it as your decomposition basis.
 
 ## Cost Awareness
 

@@ -4,7 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentError } from "../errors.ts";
 import type { OverlayConfig } from "../types.ts";
-import { generateOverlay, isCanonicalRoot, writeOverlay } from "./overlay.ts";
+import {
+	formatCurrentDate,
+	formatExistingPlan,
+	formatLeadMode,
+	generateOverlay,
+	isCanonicalRoot,
+	writeOverlay,
+} from "./overlay.ts";
 
 const SAMPLE_BASE_DEFINITION = `# Builder Agent
 
@@ -519,6 +526,145 @@ describe("writeOverlay", () => {
 		const outputPath = join(worktreePath, ".claude", "CLAUDE.md");
 		const exists = await Bun.file(outputPath).exists();
 		expect(exists).toBe(true);
+	});
+});
+
+describe("formatLeadMode", () => {
+	test("returns plan-mode instructions when mode is plan", () => {
+		const config = makeConfig({ mode: "plan" });
+		const result = formatLeadMode(config);
+
+		expect(result).toContain("Lead Mode: Plan");
+		expect(result).toContain("plan mode");
+		expect(result).toContain("must NOT spawn builders");
+		expect(result).toContain("plan_ready");
+	});
+
+	test("returns execute-mode instructions when mode is execute", () => {
+		const config = makeConfig({ mode: "execute" });
+		const result = formatLeadMode(config);
+
+		expect(result).toContain("Lead Mode: Execute");
+		expect(result).toContain("execute mode");
+	});
+
+	test("references existing plan in execute mode when set", () => {
+		const config = makeConfig({
+			mode: "execute",
+			existingPlan: "/project/.overstory/plans/task-123.md",
+		});
+		const result = formatLeadMode(config);
+
+		expect(result).toContain("/project/.overstory/plans/task-123.md");
+		expect(result).toContain("approved plan exists");
+	});
+
+	test("says no plan found in execute mode when existingPlan is undefined", () => {
+		const config = makeConfig({ mode: "execute", existingPlan: undefined });
+		const result = formatLeadMode(config);
+
+		expect(result).toContain("No existing plan was found");
+	});
+
+	test("returns empty string when mode is undefined", () => {
+		const config = makeConfig({ mode: undefined });
+		const result = formatLeadMode(config);
+
+		expect(result).toBe("");
+	});
+});
+
+describe("formatCurrentDate", () => {
+	test("returns date string when currentDate is set", () => {
+		const config = makeConfig({ currentDate: "2026-02-18" });
+		const result = formatCurrentDate(config);
+
+		expect(result).toContain("2026-02-18");
+		expect(result).toContain("Current Date");
+	});
+
+	test("returns empty string when currentDate is undefined", () => {
+		const config = makeConfig({ currentDate: undefined });
+		const result = formatCurrentDate(config);
+
+		expect(result).toBe("");
+	});
+});
+
+describe("formatExistingPlan", () => {
+	test("returns plan path when existingPlan is set", () => {
+		const config = makeConfig({ existingPlan: "/plans/task-abc.md" });
+		const result = formatExistingPlan(config);
+
+		expect(result).toContain("/plans/task-abc.md");
+		expect(result).toContain("Approved Plan");
+	});
+
+	test("returns empty string when existingPlan is undefined", () => {
+		const config = makeConfig({ existingPlan: undefined });
+		const result = formatExistingPlan(config);
+
+		expect(result).toBe("");
+	});
+});
+
+describe("generateOverlay with planning fields", () => {
+	test("plan-mode lead overlay contains plan mode instructions", async () => {
+		const config = makeConfig({
+			capability: "lead",
+			mode: "plan",
+			canSpawn: true,
+		});
+		const output = await generateOverlay(config);
+
+		expect(output).toContain("Lead Mode: Plan");
+		expect(output).toContain("must NOT spawn builders");
+	});
+
+	test("execute-mode lead overlay contains execute mode instructions", async () => {
+		const config = makeConfig({
+			capability: "lead",
+			mode: "execute",
+			canSpawn: true,
+		});
+		const output = await generateOverlay(config);
+
+		expect(output).toContain("Lead Mode: Execute");
+	});
+
+	test("overlay includes current date when set", async () => {
+		const config = makeConfig({ currentDate: "2026-02-18" });
+		const output = await generateOverlay(config);
+
+		expect(output).toContain("2026-02-18");
+	});
+
+	test("overlay includes existing plan path when set", async () => {
+		const config = makeConfig({ existingPlan: "/plans/task-xyz.md" });
+		const output = await generateOverlay(config);
+
+		expect(output).toContain("/plans/task-xyz.md");
+		expect(output).toContain("Approved Plan");
+	});
+
+	test("non-lead agent has no lead mode section", async () => {
+		const config = makeConfig({ capability: "builder", mode: undefined });
+		const output = await generateOverlay(config);
+
+		expect(output).not.toContain("Lead Mode");
+	});
+
+	test("no unreplaced planning placeholders remain", async () => {
+		const config = makeConfig({
+			mode: "plan",
+			currentDate: "2026-02-18",
+			existingPlan: "/plans/test.md",
+		});
+		const output = await generateOverlay(config);
+
+		expect(output).not.toContain("{{LEAD_MODE}}");
+		expect(output).not.toContain("{{CURRENT_DATE}}");
+		expect(output).not.toContain("{{EXISTING_PLAN}}");
 	});
 });
 

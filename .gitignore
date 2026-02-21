@@ -30,3 +30,6 @@ Thumbs.db
 
 # Test artifacts
 coverage/
+
+# Prototype (disposable, never merged)
+prototype/

@@ -449,6 +449,7 @@ export const OVERSTORY_GITIGNORE = `# Wildcard+whitelist: ignore everything, whi
 !groups.json
 !agent-defs/
 !README.md
+!plans/
 `;
 
 /**
@@ -572,6 +573,7 @@ export async function initCommand(args: string[]): Promise<void> {
 		join(OVERSTORY_DIR, "worktrees"),
 		join(OVERSTORY_DIR, "specs"),
 		join(OVERSTORY_DIR, "logs"),
+		join(OVERSTORY_DIR, "plans"),
 	];
 
 	for (const dir of dirs) {
@@ -590,6 +592,10 @@ export async function initCommand(args: string[]): Promise<void> {
 		await Bun.write(join(agentDefsTarget, fileName), content);
 		printCreated(`${OVERSTORY_DIR}/agent-defs/${fileName}`);
 	}
+
+	// 3c. Write .gitkeep in plans/ to ensure directory is tracked
+	await Bun.write(join(overstoryPath, "plans", ".gitkeep"), "");
+	printCreated(`${OVERSTORY_DIR}/plans/.gitkeep`);
 
 	// 4. Write config.yaml
 	const config = structuredClone(DEFAULT_CONFIG);

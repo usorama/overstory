@@ -40,6 +40,11 @@ describe("checkDatabases", () => {
 			},
 			models: {},
 			logging: { verbose: false, redactSecrets: true },
+			planning: {
+				enabled: true,
+				defaultMode: "auto",
+				plansTracked: true,
+			},
 		};
 	});
 

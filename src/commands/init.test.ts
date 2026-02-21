@@ -125,6 +125,64 @@ describe("initCommand: agent-defs deployment", () => {
 	});
 });
 
+describe("initCommand: plans directory", () => {
+	let tempDir: string;
+	let originalCwd: string;
+	let originalWrite: typeof process.stdout.write;
+
+	beforeEach(async () => {
+		tempDir = await createTempGitRepo();
+		originalCwd = process.cwd();
+		process.chdir(tempDir);
+
+		// Suppress stdout noise from initCommand
+		originalWrite = process.stdout.write;
+		process.stdout.write = (() => true) as typeof process.stdout.write;
+	});
+
+	afterEach(async () => {
+		process.chdir(originalCwd);
+		process.stdout.write = originalWrite;
+		await cleanupTempDir(tempDir);
+	});
+
+	test("creates .overstory/plans/ directory", async () => {
+		await initCommand([]);
+
+		const plansDir = join(tempDir, ".overstory", "plans");
+		const { stat } = await import("node:fs/promises");
+		const stats = await stat(plansDir);
+		expect(stats.isDirectory()).toBe(true);
+	});
+
+	test("creates .overstory/plans/.gitkeep", async () => {
+		await initCommand([]);
+
+		const gitkeepPath = join(tempDir, ".overstory", "plans", ".gitkeep");
+		const exists = await Bun.file(gitkeepPath).exists();
+		expect(exists).toBe(true);
+	});
+
+	test(".gitignore includes !plans/ whitelist entry", async () => {
+		await initCommand([]);
+
+		const gitignorePath = join(tempDir, ".overstory", ".gitignore");
+		const content = await Bun.file(gitignorePath).text();
+		expect(content).toContain("!plans/\n");
+	});
+
+	test("config.yaml includes planning section", async () => {
+		await initCommand([]);
+
+		const configPath = join(tempDir, ".overstory", "config.yaml");
+		const content = await Bun.file(configPath).text();
+		expect(content).toContain("planning:");
+		expect(content).toContain("enabled: true");
+		expect(content).toContain("defaultMode: auto");
+		expect(content).toContain("plansTracked: true");
+	});
+});
+
 describe("initCommand: .overstory/.gitignore", () => {
 	let tempDir: string;
 	let originalCwd: string;

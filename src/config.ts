@@ -51,6 +51,11 @@ export const DEFAULT_CONFIG: OverstoryConfig = {
 		verbose: false,
 		redactSecrets: true,
 	},
+	planning: {
+		enabled: true,
+		defaultMode: "auto",
+		plansTracked: true,
+	},
 };
 
 const CONFIG_FILENAME = "config.yaml";
@@ -417,6 +422,15 @@ function validateConfig(config: OverstoryConfig): void {
 		throw new ValidationError(`mulch.primeFormat must be one of: ${validFormats.join(", ")}`, {
 			field: "mulch.primeFormat",
 			value: config.mulch.primeFormat,
+		});
+	}
+
+	// planning.defaultMode must be one of the valid options
+	const validPlanModes = ["auto", "simple", "complex"] as const;
+	if (!validPlanModes.includes(config.planning.defaultMode as (typeof validPlanModes)[number])) {
+		throw new ValidationError(`planning.defaultMode must be one of: ${validPlanModes.join(", ")}`, {
+			field: "planning.defaultMode",
+			value: config.planning.defaultMode,
 		});
 	}
 
